@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="AGENT-README.txt" />
+    <File Path="icon-codebrix-128.png" />
+    <File Path="LICENSE" />
+    <File Path="README.md" />
+    <File Path="THIRD-PARTY-NOTICES.txt" />
+  </Folder>
+  <Folder Name="/Tests/">
+    <Project Path="tests/CodeBrix.Audio.Opus.Tests/CodeBrix.Audio.Opus.Tests.csproj" />
+  </Folder>
+  <Project Path="src/CodeBrix.Audio.Opus/CodeBrix.Audio.Opus.csproj" />
+</Solution>

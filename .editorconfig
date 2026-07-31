@@ -1,0 +1,43 @@
+root = true
+
+# ==============================================================================================
+# CodeBrix.Audio.Opus
+#
+# This file exists for ONE narrow purpose, described in full below. Everything written in this
+# repository is held to the ordinary CodeBrix standard: a warning-free build with no project-level
+# suppression, and an XML doc comment on every public and protected member. There is no <NoWarn>
+# in any csproj here and none should be added.
+# ==============================================================================================
+
+[*.cs]
+indent_style = space
+indent_size = 4
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# ----------------------------------------------------------------------------------------------
+# The vendored Opus codec ONLY (src/CodeBrix.Audio.Opus/Codec/).
+#
+# CS1573 - "parameter has no matching param tag in the XML comment" - fires 118 times across the
+# vendored codec, and every one of them is upstream's, on an internal member.
+#
+# The pattern is consistent once you look at it. The Opus reference implementation is C, and this
+# is a port of it, so wherever the C code passed a pointer the C# port passes an array plus an
+# index: silk_CNG(psDec, psDecCtrl, frame, frame_ptr, length). Upstream carried the C function's
+# documentation across, which covers the real parameters ("I/O Decoder state", "I Length of
+# residual") but not the _ptr / _idx arguments the port itself introduced. Elsewhere - the CELT
+# kernels, for instance - the tags that do exist are empty: <param name="x"></param>.
+#
+# So neither obvious fix is honest. Writing the 118 missing tags means inventing documentation for
+# codec internals nobody here wrote, and deleting the existing tags to silence the warning would
+# throw away the genuine descriptions carried over from the C reference. Nor does the warning cost
+# anything: every type under Codec/ is internal, so none of it reaches the generated XML doc file
+# or any consumer of this package.
+#
+# The suppression is therefore scoped to exactly the directory that has the problem. Code written
+# in this repository - Ogg/, Codecs/, and the public API at the root - is NOT covered by it and
+# builds warning-free on its own merits.
+# ----------------------------------------------------------------------------------------------
+[src/CodeBrix.Audio.Opus/Codec/**.cs]
+dotnet_diagnostic.CS1573.severity = none

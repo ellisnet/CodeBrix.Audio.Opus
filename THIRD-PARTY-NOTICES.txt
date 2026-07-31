@@ -1,0 +1,165 @@
+THIRD-PARTY SOFTWARE NOTICES AND INFORMATION
+
+CodeBrix.Audio.Opus adds Ogg Opus decoding and encoding to CodeBrix.Audio. It
+incorporates ONE third-party project: the Concentus C# port of the Opus codec,
+which is licensed under the BSD 3-Clause terms reproduced in full below.
+
+That single fact is why this library exists as a separate package. CodeBrix.Audio
+holds a deliberate bar of MIT or more permissive, and everything vendored there
+clears it. The Opus codec cannot: every managed Opus implementation is a port of
+libopus, and libopus is BSD-3-Clause. Rather than put a licence with an added
+condition inside a package named CodeBrix.Audio.MitLicenseForever, the Opus codec
+ships here, under BSD-3-Clause, as an add-on package.
+
+NOT INCORPORATED, and deliberately so:
+
+  * NO NATIVE CODE. Concentus also ships a P/Invoke layer and independently
+    compiled builds of the Opus C reference library. None of it is here - not the
+    binaries, and not the managed interop that loads them. This package is pure
+    managed code on every platform and ships no runtimes/ folder. The final
+    paragraph of the Concentus licence below, which covers redistribution of
+    those compiled libopus binaries, therefore does not apply to this package.
+
+  * NO Concentus.Oggfile. The Ogg container layer here (src/CodeBrix.Audio.Opus/
+    Ogg/) was written from the specifications - RFC 3533 (the Ogg container) and
+    RFC 7845 (Ogg Opus) - and contains no code from Concentus.Oggfile, NVorbis,
+    or any other container implementation. Specifications are unrestricted to
+    implement from, and this follows the same path CodeBrix.Audio took for its
+    FLAC decoder.
+
+NuGet package dependencies are not listed here. This library depends on
+CodeBrix.Audio.MitLicenseForever, which carries its own LICENSE and
+THIRD-PARTY-NOTICES.txt; this file covers only source code incorporated INTO
+this repository.
+
+================================================================================
+
+1. Concentus  (vendored as the managed Opus codec, src/CodeBrix.Audio.Opus/Codec/)
+
+Project:    Concentus - a portable C# implementation of the Opus audio codec
+Source:     https://github.com/lostromb/concentus
+Version:    2.2.2
+Commit:     3885c4e46513ef0fc81fca100189e54f1714c6ca (2025-09-27)
+License:    BSD 3-Clause ("the Opus licence" - the standard Xiph.Org / IETF text)
+
+Copyright holders. The upstream LICENSE names nine parties and says "including
+but not limited to"; two more appear only in the headers of individual source
+files. All eleven are reproduced here, the file headers being authoritative:
+
+    Skype Limited                     Jean-Marc Valin
+    Xiph.Org Foundation               Gregory Maxwell
+    CSIRO                             Mark Borgerding
+    Microsoft Corporation             Timothy B. Terriberry
+    Logan Stromberg                   Thorvald Natvig
+    Octasic Inc.
+
+Every vendored file retains its upstream copyright header verbatim.
+
+WHAT WAS VENDORED
+    133 .cs files from CSharp/Concentus/ - the SILK and CELT layers, the Opus
+    encoder / decoder / multistream codecs / repacketizer, the shared DSP and
+    range-coder helpers, and the libspeexdsp resampler port.
+
+WHAT WAS OMITTED
+    * CSharp/Concentus/Native/ (13 files) - the P/Invoke layer for native
+      libopus. See "NO NATIVE CODE" above.
+    * CSharp/Concentus/OpusCodecFactory.cs - exists only to probe for native
+      libopus and hand back either a native or a managed codec. With the native
+      path gone it has no purpose; the managed encoder and decoder are
+      constructed directly.
+    * CSharp/Concentus/AssemblyInfo.cs - assembly attributes belong to the
+      upstream assembly, not this one.
+    * Every other project in the upstream repository: Concentus.Unsafe,
+      Concentus.Native, the demos, and the test/parity harnesses.
+
+MODIFICATIONS MADE DURING THE PORT
+    1. Namespaces renamed Concentus.* -> CodeBrix.Audio.Opus.Codec.*, each
+       declaration carrying a `//was previously: <upstream namespace>;` comment.
+       The upstream project name is deliberately absent from the live namespace,
+       per the CodeBrix family de-branding convention: an upstream's name belongs
+       in comments, provenance markers and licence text - here and in every file
+       header - rather than in a namespace, type or member name.
+    2. Block-scoped namespaces converted to file-scoped (CodeBrix convention).
+    3. Top-level public types demoted to internal. The codec is an
+       implementation detail of this package; consumers reach Opus through the
+       CodeBrix.Audio.Opus public API, which does not expose any Concentus type.
+    4. Conditional-compilation branches that are dead on .NET 10 were removed
+       along with their directives: the netstandard1.1, netstandard2.0, net452
+       and net35 paths are gone, and the NET8_0_OR_GREATER / NETCOREAPP paths
+       kept. PARITY was treated as defined, matching the upstream csproj, which
+       defines it in both Debug and Release - those branches are the ones that
+       stay bit-exact with the Opus C reference implementation. `#if DEBUG`
+       blocks were left intact.
+    5. [Obsolete] attributes removed. Every one of them redirected callers to
+       OpusCodecFactory or ResamplerFactory for native acceleration, which is
+       not part of this package.
+    6. Unused `using Concentus.Native;` directives removed from
+       ResamplerFactory.cs and Opus/Structs/OpusEncoder.cs, neither of which
+       referenced a type from that namespace.
+
+No algorithmic change was made to the codec. Encoding and decoding behaviour is
+upstream's.
+
+----- Concentus / Opus License (BSD 3-Clause) -----
+
+Copyright (c) by various holding parties, including (but not limited to):
+Skype Limited, Xiph.Org Foundation, CSIRO, Microsoft Corporation,
+Jean-Marc Valin, Gregory Maxwell, Mark Borgerding, Timothy B. Terriberry,
+Logan Stromberg. All rights are reserved by their respective holders.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of Internet Society, IETF or IETF Trust, nor the
+   names of specific contributors, may be used to endorse or promote
+   products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+This repository and its redistributable packages contain independently compiled
+versions of the Opus C reference library, which is maintained by Xiph.org and the
+Opus open-source contributors. The source code for these libraries is freely available
+at https://gitlab.xiph.org/xiph/opus/-/tags/v1.5.2, and all binaries are being
+redistributed to you under the same terms of the general Opus license dictated above.
+
+----- end of Concentus / Opus License -----
+
+A NOTE ON THE THIRD CLAUSE. The no-endorsement clause above means neither the
+names of the Internet Society, the IETF, the IETF Trust, nor those of any
+specific contributor may be used to promote this package. Nothing in
+CodeBrix.Audio.Opus - its package description, README, tags or documentation -
+claims endorsement, approval or affiliation. It describes only what the code
+does: it reads and writes the Opus format.
+
+================================================================================
+
+Jeremy Ellis and contributors license the CodeBrix.Audio.Opus project to you
+under the terms set forth in the LICENSE file, which is located at the root of
+this repository.
+
+If you have any questions about any third-party code referenced here, or if you
+believe that any third-party code has been included in CodeBrix.Audio.Opus in
+error, please open a new issue at:
+https://github.com/ellisnet/CodeBrix.Audio.Opus/issues
+
+================================================================================
+
+END OF THIRD-PARTY SOFTWARE NOTICES AND INFORMATION

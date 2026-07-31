@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.5.1" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="coverlet.collector" Version="8.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="SilverAssertions.ApacheLicenseForever" Version="1.0.49" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CodeBrix.Audio.Opus\CodeBrix.Audio.Opus.csproj" />
+  </ItemGroup>
+
+  <!--
+    Audio fixtures live under tests/Assets/audio and are copied next to the test
+    assembly. They are synthesized locally by tools/make_test_fixtures - see
+    tests/Assets/audio/AUDIO-FIXTURES.txt - never third-party audio.
+  -->
+  <ItemGroup>
+    <Content Include="..\Assets\audio\*.opus;..\Assets\audio\*.ogg;..\Assets\audio\*.wav">
+      <Link>Assets\audio\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>
