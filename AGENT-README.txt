@@ -21,6 +21,16 @@ CodeBrix.Audio engine's Recorder. None of those needs any other change. The
 consuming APPLICATION takes this dependency and makes the call - the add-ins
 never do.
 
+In the GameEngine, .opus is not a second-class add-on. It reaches every path a
+built-in format reaches: AudioResourceManager loads, SoundChannel clips,
+CachedSound decode-once preload, the SFX voice pool, music tracks, and
+PlatformAudioFactory.Supports. That falls out of how the engine resolves an
+extension - its own table first, then CodeBrix.Audio's AudioFileReaderRegistry,
+which is where Register() put .opus - so no engine code names Opus, and none
+needs to. A format arriving by that route declares no file-on-disk requirement,
+which is the same flag that makes short clips eligible for PCM preload, so
+.opus preloads exactly like .ogg rather than decoding on the audio thread.
+
 
 WHY THIS IS A SEPARATE PACKAGE (read before proposing a merge)
 --------------------------------------------------------------------------------
@@ -140,6 +150,15 @@ COMMON PITFALLS
     SharedAudioOutput.RegisterCodecFactory de-duplicates on the instance, so
     handing it a freshly constructed factory each call would register the codec
     repeatedly.
+
+  - IN THE GAMEENGINE, REGISTER BEFORE THE FIRST LOAD, NOT BEFORE THE FIRST
+    PLAY. The engine resolves an audio extension when an asset is LOADED, so
+    CodeBrixAudioOpus.Register() has to run ahead of every .opus load - which
+    includes any audio an AssetsFile brings in at start-up, before a line of
+    game code runs. Get the order wrong and the load throws
+    NotSupportedException. That message names this package and this call by
+    name, because a licence-driven packaging split earns a better error than
+    "format not supported".
 
 
 CODING CONVENTIONS (CodeBrix family)
