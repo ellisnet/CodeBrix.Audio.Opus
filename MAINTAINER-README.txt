@@ -153,9 +153,9 @@ licence requires is in THIRD-PARTY-NOTICES.txt: the full licence text, all
 ELEVEN copyright holders, what was vendored, what was omitted and what changed.
 
 This is a ONE-AND-DONE vendoring. This package does not track upstream and will
-not be re-synced with it, which is the opposite of how CodeBrix.Audio.Engine
-treats its own vendored engine source. There is no re-vendor checklist here, and
-the vendored code may be edited in place.
+not be re-synced with it - the same policy CodeBrix.Audio applies to its
+CodeBrix.Audio.Engine source. There is no re-vendor checklist here, and the
+vendored code may be edited in place.
 
 The port is reproducible. It was produced by ~/ClaudeHome/port_concentus.py:
 
