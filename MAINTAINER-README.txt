@@ -335,20 +335,26 @@ pin in the library csproj must name a PUBLISHED version on nuget.org whenever
 this package is published - a pin at a locally packed build would ship a .nupkg
 declaring a dependency nobody can restore.
 
-  >> AS THINGS STAND THE PIN IS A LOCAL PACK AND MUST BE RAISED BEFORE PUBLISH.
-     CodeBrix.Audio.MitLicenseForever 1.0.241.460 is the LOCAL build carrying
-     ConcealLoss, SupportsLossConcealment and AudioPacket.Loss, packed to
-     ~/ClaudeHome/localfeed_codebrix_audio_2026-08-29/. Raise the pin to the
-     published version of that work, restore from nuget.org ALONE with --force,
-     and re-run the suite before publishing this package. (The previous pin,
-     1.0.241.72, is published but has neither member, so it will not build the
-     ConcealLoss override.)
+  THE PIN IS PUBLISHED AND THIS PACKAGE IS PUBLISHABLE.
+  CodeBrix.Audio.MitLicenseForever 1.0.241.985 is the PUBLISHED build carrying
+  ConcealLoss, SupportsLossConcealment and AudioPacket.Loss, and it is what the
+  library csproj names (raised 2026-08-29 from the local pack 1.0.241.460 that
+  the work was developed against). Verified by restoring from nuget.org ALONE:
+  obj/project.assets.json resolves CodeBrix.Audio.MitLicenseForever/1.0.241.985
+  and lists no local feed among its sources, and the packed .nuspec declares
+  that same version as its only dependency.
 
-VERIFYING AGAINST AN UNPUBLISHED CodeBrix.Audio. That situation recurs every time
-the two repositories change together, so the method is recorded rather than the
-episode. Pack CodeBrix.Audio into a folder, raise the pin to that build's
-version, and restore from the folder WITHOUT adding a nuget.config to this
-repository:
+  Anything at or below 1.0.241.72 is too old: those releases have neither
+  ConcealLoss nor SupportsLossConcealment on IPacketSoundDecoder, so
+  OpusPacketSoundDecoder's overrides will not compile against them.
+
+VERIFYING AGAINST AN UNPUBLISHED CodeBrix.Audio - THE PRE-PUBLISH METHOD. That
+situation recurs every time the two repositories change together, so the method
+is recorded rather than the episode. It is how the concealment work above was
+developed and gated before CodeBrix.Audio 1.0.241.985 existed, and it is what to
+do again next time. Pack CodeBrix.Audio into a folder, raise the pin to that
+build's version, and restore from the folder WITHOUT adding a nuget.config to
+this repository:
 
     dotnet restore CodeBrix.Audio.Opus.slnx \
         -p:RestoreSources="<local-feed-folder>%3Bhttps://api.nuget.org/v3/index.json"
