@@ -68,7 +68,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CodeBrix.Audio.MitLicenseForever" Version="1.0.233.886" />
+    <PackageReference Include="CodeBrix.Audio.MitLicenseForever" Version="1.0.241.72" />
   </ItemGroup>
 
   <ItemGroup>

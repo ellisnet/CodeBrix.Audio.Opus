@@ -24,6 +24,12 @@ CodeBrix.Audio engine's Recorder. None of those needs any other change. The
 consuming APPLICATION takes this dependency and makes the call - the add-ins
 never do.
 
+The same call also turns on Opus for audio that arrives as CONTAINER PACKETS
+rather than as a file - the shape a demultiplexer produces when it lifts an
+audio track out of a media container. That is CodeBrix.Audio's packet seam, and
+this package is what teaches it Opus; see PLAYING OPUS THAT ARRIVES AS PACKETS
+below. An application that only ever opens .opus files is unaffected by it.
+
 In the GameEngine, .opus is not a second-class add-on. It reaches every path a
 built-in format reaches: AudioResourceManager loads, SoundChannel clips,
 CachedSound decode-once preload, the SFX voice pool, music tracks, and
@@ -83,8 +89,9 @@ apart from the codec factory:
 
   CodeBrix.Audio.Opus.Codec    the vendored Opus codec (all internal)
   CodeBrix.Audio.Opus.Ogg      the Ogg container layer (all internal)
-  CodeBrix.Audio.Opus.Codecs   the engine-facing decoder / encoder / factory
-                               (only OpusCodecFactory is public)
+  CodeBrix.Audio.Opus.Codecs   the engine-facing decoders / encoder /
+                               factories (only OpusCodecFactory and
+                               OpusPacketCodecFactory are public)
 
 
 WHY THIS IS A SEPARATE PACKAGE (read before proposing a merge)
@@ -107,7 +114,7 @@ notice text must travel with any redistribution.
 
 CORE API REFERENCE
 ==================
-Six public types. Every one of them is listed here.
+Seven public types. Every one of them is listed here.
 
 CodeBrixAudioOpus  (static, CodeBrix.Audio.Opus)
 ------------------------------------------------
@@ -115,12 +122,14 @@ CodeBrixAudioOpus  (static, CodeBrix.Audio.Opus)
     static void Register(AudioEngine engine)
     static bool IsRegistered { get; }
 
-  Register() is the one call. It registers the codec factory with
-  SharedAudioOutput and registers ".opus" with AudioFileReaderRegistry. It is
-  idempotent and thread-safe; calling it twice does nothing.
+  Register() is the one call. It registers BOTH codec factories with
+  SharedAudioOutput - the stream one, which opens .opus files, and the packet
+  one, which decodes the bare Opus packets a media container carries - and
+  registers ".opus" with AudioFileReaderRegistry. It is idempotent and
+  thread-safe; calling it twice does nothing.
   Register(AudioEngine) is for a consumer driving its OWN engine rather than the
-  shared output - it registers the factory with that engine only, and does not
-  affect SharedAudioOutput. Pair it with CodeBrix.Audio's
+  shared output - it registers both factories with that engine only, and does
+  not affect SharedAudioOutput. Pair it with CodeBrix.Audio's
   ManagedCodecs.RegisterAll(engine). It throws ArgumentNullException on a null
   engine.
   There is deliberately no module initializer doing this for you: a module
@@ -147,6 +156,12 @@ OpusFileReader : WaveStream  (CodeBrix.Audio.Opus)
 
   The peer of CodeBrix.Audio's OggVorbisFileReader. WaveFormat is always
   48 kHz 32-bit IEEE float; Channels comes from the file (1 or 2).
+
+  THE HEADER'S OUTPUT GAIN IS APPLIED to everything the reader hands back, as
+  RFC 7845 requires of a decoder. The field is 0 in every file ordinary encoders
+  produce, so this is invisible for practically all audio; a file that does carry
+  a gain plays at the level its author asked for, and asks for no gain handling
+  from you.
 
   OWNERSHIP DIFFERS BY CONSTRUCTOR. The string overload opens the file and the
   reader owns it - dispose the reader and the file closes. The Stream overload
@@ -245,6 +260,35 @@ OpusCodecFactory : ICodecFactory  (CodeBrix.Audio.Opus.Codecs)
   new Recorder(captureDevice, stream, "opus") records straight to Ogg Opus once
   the factory is registered. It accepts only the "opus" format id and only 1 or
   2 channels, returning null otherwise.
+
+OpusPacketCodecFactory : IPacketCodecFactory  (CodeBrix.Audio.Opus.Codecs)
+--------------------------------------------------------------------------
+    const string OpusCodecId = "opus"
+    string FactoryId { get; }              // "CodeBrix.Audio.Opus.ManagedOpus.Packets"
+    IReadOnlyCollection<string> SupportedCodecIds { get; }    // ["opus"]
+    int Priority { get; }                  // 0
+    IPacketSoundDecoder CreateDecoder(string codecId,
+                                      ReadOnlyMemory<byte> codecPrivate,
+                                      AudioFormat? hint)
+
+  The PACKET-level peer of OpusCodecFactory, and what makes Opus available to
+  CodeBrix.Audio's packet seam - PacketAudioPlayer and
+  SharedAudioOutput.CreatePacketDecoder. Register() wires it up; it is public so
+  a consumer can register it by hand, in which case hold ONE instance for the
+  same reason the stream factory does.
+
+  Priority is 0 rather than -10 because there is nothing for it to sit below:
+  the engine's bundled native library decodes Ogg STREAMS, not loose packets, so
+  nothing competes for the "opus" codec id.
+
+  codecPrivate is the identification header ("OpusHead") bytes, which is exactly
+  what a container stores for the track. codecId must be "opus" (matched
+  case-insensitively). The hint is IGNORED - see the packet section below.
+
+  Returns NULL for a request it cannot serve at all: another codec's id, or
+  codec-private data that is not a well-formed identification header. It THROWS
+  NotSupportedException for a header it understands but cannot decode, which is
+  the multichannel case; see the packet section for the exact message.
 
 ERROR MODEL
 -----------
@@ -385,6 +429,124 @@ Drive your own engine rather than the shared output:
     CodeBrixAudioOpus.Register(engine);  // ...and Opus
 
 
+PLAYING OPUS THAT ARRIVES AS PACKETS
+===================================
+Everything above assumes the audio is a FILE - an Ogg stream a reader can open
+and seek in. Audio lifted out of a media container does not arrive that way: a
+demultiplexer hands out bare Opus packets, fifty a second for the usual 20 ms
+frame, with no framing of their own. CodeBrix.Audio calls that its PACKET SEAM,
+and Register() teaches it Opus.
+
+Read CodeBrix.Audio's own guide for the seam itself - IPacketSoundDecoder,
+IPacketCodecFactory, IAudioPacketSource and PacketAudioPlayer are all its types.
+What follows is only the part that is Opus's.
+
+THE CODEC-PRIVATE DATA IS THE OpusHead BYTES. A Matroska or WebM track stores
+the Opus identification header verbatim in its CodecPrivate element, so that
+element's bytes are what you hand over - no unwrapping, no re-framing:
+
+    using CodeBrix.Audio.Opus;
+    using CodeBrix.Audio.Playback;
+    using CodeBrix.Audio.Wave;
+
+    CodeBrixAudioOpus.Register();                 // once, at start-up
+    SharedAudioOutput.Configure(48000);           // Opus's only rate; see below
+
+    var player = new PacketAudioPlayer();
+    player.PlaybackEnded += (s, e) => { /* the track finished */ };
+    player.Open("opus", track.CodecPrivate, myPacketSource);   // your demuxer
+    player.Play();
+
+    // ...or, to decode packets without playing them:
+    using var decoder = SharedAudioOutput.CreatePacketDecoder("opus",
+                                                             track.CodecPrivate);
+
+The codec id is "opus" - the CODEC, not the container. A container of your own
+that stores the same identification header works the same way; there is no
+second header format to support.
+
+WHAT THE DECODER REPORTS
+    SampleRate            always 48000 - the 48 kHz rule holds here too, and the
+                          header's input sample rate is informational exactly as
+                          it is for a file
+    Channels              1 or 2, from the header
+    SampleFormat          F32
+    MaxSamplesPerPacket   5760 * Channels - a 120 ms packet, the longest Opus
+                          defines. Size the output buffer to it once and reuse
+                          it; then no packet can ever be too big
+    PreSkipSamples        the header's pre-skip, counted PER CHANNEL
+
+THE HINT IS IGNORED. An Opus stream decodes at 48 kHz and at its own channel
+count, and this decoder converts neither; ask the decoder what it produces
+rather than telling it what you want. PacketAudioPlayer converts from there, and
+so does the engine's mixer.
+
+THE PRE-SKIP IS REPORTED, NOT APPLIED. The stream reader discards the encoder's
+priming for you because it knows it is at the start of a file. A packet decoder
+does not know that - the packet it was just handed might be the first of the
+stream or the first after a seek - so it hands the priming back and tells you
+how much of it there is. Discard PreSkipSamples frames at the START of the
+stream and nowhere else. PacketAudioPlayer does this for you.
+
+THE TAIL IS NOT TRIMMED EITHER. The encoder pads its last frame, and the
+container states where the audio really stops (a discard-padding field, a
+total-sample count). The decoder emits what the packets contain; applying that
+trim is the caller's job. There is deliberately no flush or drain call.
+
+SEEKING: PRE-ROLL, AND HOW MUCH. Opus carries state between packets, so after
+repositioning the source you call Reset() and then feed packets from BEFORE your
+target, discarding what comes back until you reach it. 80 ms is the standard
+answer - RFC 7845 section 4.2 asks for it, and Matroska records it as an Opus
+track's SeekPreRoll - and it is what PacketAudioPlayer's preRoll argument is
+usually given.
+
+  Measured here, on a 2-second sine sweep (the hardest case there is, because a
+  pure tone keeps the codec's post-filter ringing):
+
+      80 ms  pre-roll   0.074 relative RMS error against an uninterrupted decode
+      120 ms pre-roll   0.016
+      160 ms pre-roll   0.003
+      240 ms pre-roll   0.00002   - identical, to one step of the codec's
+                                    16-bit intermediate
+
+  So 80 ms is right for an ordinary seek, and an application that wants a seek
+  to be indistinguishable from continuous playback should ask for more. Ordinary
+  music and speech converge faster than the sweep does.
+
+THE OUTPUT GAIN IS APPLIED, here and on the file path alike, and by the same
+code inside the codec - so the two paths produce identical samples for identical
+packets. Nothing is asked of you. (Almost every stream stores a gain of 0.)
+
+A CORRUPT PACKET THROWS InvalidDataException, the same exception a corrupt file
+throws, with a message saying the packet could not be decoded. A packet that is
+merely MISSING is a different thing - see the next paragraph.
+
+A LOST PACKET IS AN EMPTY PACKET. Feed a zero-length packet for each packet the
+source knows it dropped and the codec conceals the gap - it invents a plausible
+continuation rather than clicking - and the decoder stays usable for the packets
+that follow. The gap is taken to be as long as the last packet decoded, or 20 ms
+before anything has been decoded. A gap the source does not know about needs
+nothing: feed the next packet you have.
+
+MONO AND STEREO ONLY, and the refusal says so. Channel mapping family 0, the
+same limit the file reader has. A family-1 (surround) header does not return
+null - null means "not my codec" and would end up reported as "no registered
+packet decoder" - it throws NotSupportedException:
+
+    Opus channel mapping family 1 (surround, 6 channels) is not supported by
+    this decoder; only mapping family 0 (mono/stereo) is supported.
+
+The engine logs a factory exception and moves on to the next factory, so that
+sentence reaches the engine log rather than being lost. Catch it yourself if
+you create the decoder directly through the factory.
+
+CALL SharedAudioOutput.Configure(48000) AT START-UP. Opus's only rate is 48 kHz,
+and when the shared output runs at the media's rate no conversion runs at all.
+Without it, an application that has already played a 44.1 kHz sound effect has
+started the output at 44.1 kHz, and every Opus track then plays through the
+interpolator.
+
+
 MINIMUM VIABLE PROJECT
 ======================
 Console application that plays a .opus file to the end. Two files.
@@ -509,18 +671,21 @@ COMMON PITFALLS TO AVOID
     every encode except "wav".
 
   - MONO AND STEREO ONLY. Channel mapping family 0. A family-1 (multichannel)
-    stream is declined with a message saying so rather than mis-mapped.
+    stream is declined with a message saying so rather than mis-mapped - on both
+    seams, the file one and the packet one.
 
-  - Register() is idempotent, and holds ONE factory instance on purpose.
-    SharedAudioOutput.RegisterCodecFactory de-duplicates on the instance, so
-    handing it a freshly constructed factory each call would register the codec
-    repeatedly. If you register OpusCodecFactory by hand, hold your own single
-    instance for the same reason.
+  - Register() is idempotent, and holds ONE instance of EACH factory on purpose.
+    SharedAudioOutput.RegisterCodecFactory and RegisterPacketCodecFactory both
+    de-duplicate on the instance, so handing either a freshly constructed factory
+    per call would register the codec repeatedly. If you register OpusCodecFactory
+    or OpusPacketCodecFactory by hand, hold your own single instance of each for
+    the same reason.
 
-  - Register(AudioEngine) IS NOT Register(). The overload touches only the engine
-    you pass and does NOT register the ".opus" file extension with
-    AudioFileReaderRegistry, so AudioFileReader still will not open a .opus after
-    it. Call the parameterless Register() for the shared-output path.
+  - Register(AudioEngine) IS NOT Register(). The overload registers both codec
+    factories on the engine you pass, but does NOT register the ".opus" file
+    extension with AudioFileReaderRegistry, so AudioFileReader still will not
+    open a .opus after it. Call the parameterless Register() for the
+    shared-output path.
 
   - IN THE GAMEENGINE, REGISTER BEFORE THE FIRST LOAD, NOT BEFORE THE FIRST
     PLAY. The engine resolves an audio extension when an asset is LOADED, so
@@ -543,10 +708,16 @@ COMMON PITFALLS TO AVOID
 
 WHAT THIS PACKAGE DOES NOT DO
 =============================
-  - It does not decode or encode multichannel Opus (channel mapping family 1),
-    or the Opus-in-Matroska / Opus-in-WebM / raw-packet-over-RTP containers.
-    Ogg Opus files only. The multistream codec IS vendored, so adding family 1
-    later would be an addition rather than a rewrite.
+  - It does not decode or encode multichannel Opus (channel mapping family 1).
+    Mono and stereo, mapping family 0, on both seams. The multistream codec IS
+    vendored, so adding family 1 later would be an addition rather than a
+    rewrite.
+
+  - It does not READ any container but Ogg. It decodes the Opus packets a
+    container carried, once something else has lifted them out and handed over
+    the identification header - it does not parse Matroska, WebM, RTP or
+    anything else, and it has no demultiplexer of its own. Encoding is Ogg
+    Opus files only.
 
   - It does not P/Invoke libopus, ship native binaries, or provide a native
     path. If you need libopus itself, this is not that package.
@@ -606,13 +777,40 @@ The test suite is the executable documentation for everything above.
                               left mid-way; format detection without being told;
                               encoder created for "opus" and NOT for "ogg"; and
                               a factory-built decoder decoding real audio.
+  OpusPacketCodecFactoryTests.cs
+                              The packet seam. Factory identity and the two ways
+                              it says no (null for another codec or unreadable
+                              codec-private data, NotSupportedException for a
+                              multichannel header); a round trip that takes an
+                              Ogg fixture apart into packets and decodes them to
+                              exactly what the stream reader produces, sample for
+                              sample; how close an 80 ms pre-roll gets after
+                              Reset() and how much closer 240 ms gets; that
+                              Reset() leaves the decoder identical to a new one;
+                              and that a lost (empty) packet is concealed.
+  OpusOutputGainTests.cs      The identification header's output gain, on BOTH
+                              decode paths: that it scales by the factor the
+                              header states, that a boost past full scale
+                              saturates rather than wrapping, that the two paths
+                              stay sample-identical with a gain applied, that a
+                              zero gain changes nothing, and that the gain
+                              survives a seek and a reset.
+  OpusPacketRegistrationTests.cs
+                              That Register() adds the packet factory to the
+                              shared output exactly once however often it is
+                              called, and that Register(engine) adds both
+                              factories to that engine.
   OpusPlaybackTests.cs        The device paths - AudioFilePlayer, SoundEffectClip,
                               seeking during playback, and a voice-note-shaped
                               file playing at the right pitch and speed. Opt-in;
                               see the note below.
+  OpusPacketPlaybackTests.cs  The same motif, encoded and then played as loose
+                              PACKETS through PacketAudioPlayer. Opt-in.
   AudioAssertions.cs          How lossy output is compared: tolerance-based,
                               against a second implementation's decode.
   TestAssets.cs, TestAudio.cs, AudibleTestScope.cs   Fixture plumbing.
+  PacketFixtures.cs           Takes an Ogg fixture apart into the codec-private
+                              data and audio packets a container would carry.
 
 The fixtures those tests read are described at
 https://github.com/ellisnet/CodeBrix.Audio.Opus/blob/main/tests/Assets/audio/AUDIO-FIXTURES.txt
@@ -652,7 +850,15 @@ QUICK REFERENCE CARD
                                                 .Configure(48000) first
   RECORD    new Recorder(device, stream, "opus")
 
-  SIX PUBLIC TYPES
+  PACKETS   player.Open("opus", codecPrivate, source)   PacketAudioPlayer
+            SharedAudioOutput.CreatePacketDecoder("opus", codecPrivate)
+            codecPrivate = the OpusHead bytes (a container's CodecPrivate)
+            output buffer sized to MaxSamplesPerPacket (5760 * Channels)
+            PreSkipSamples is REPORTED, not applied; the tail is not trimmed
+            Reset() + >= 80 ms of pre-roll after the source jumps
+            an EMPTY packet = a lost one = concealed, not an error
+
+  SEVEN PUBLIC TYPES
     CodeBrixAudioOpus      Register() / Register(AudioEngine) / IsRegistered
     OpusFileReader         WaveStream, 48 kHz 32-bit float
     OpusFileWriter         IDisposable; DISPOSE IT
@@ -661,6 +867,9 @@ QUICK REFERENCE CARD
     OpusCodecFactory       ICodecFactory; FactoryId
                            "CodeBrix.Audio.Opus.ManagedOpus", Priority -10,
                            SupportedFormatIds ["ogg", "opus"]
+    OpusPacketCodecFactory IPacketCodecFactory; FactoryId
+                           "CodeBrix.Audio.Opus.ManagedOpus.Packets",
+                           Priority 0, SupportedCodecIds ["opus"]
 
   THREE RULES YOU WILL OTHERWISE BREAK
     1. 48 kHz always. EncoderInputSampleRate is informational; never convert by it.

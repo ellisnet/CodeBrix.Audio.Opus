@@ -32,13 +32,25 @@ public static class CodeBrixAudioOpus
     // codec repeatedly.
     private static readonly OpusCodecFactory Factory = new OpusCodecFactory();
 
+    // The packet seam's factory, and one instance for the same reason: SharedAudioOutput
+    // .RegisterPacketCodecFactory de-duplicates on the instance too.
+    private static readonly OpusPacketCodecFactory PacketFactory = new OpusPacketCodecFactory();
+
     private static bool registered;
 
     /// <summary>
     /// Registers Opus with the shared audio output and the file-name reader registry.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Idempotent and safe to call from any thread; calling it more than once does nothing.
+    /// </para>
+    /// <para>
+    /// It registers BOTH audio seams: the stream seam, which is what opens a .opus file, and the
+    /// packet seam, which decodes the bare Opus packets a media container carries. An application
+    /// that only ever plays files is unaffected by the second one; an application demultiplexing a
+    /// container gets it from the call it was already making.
+    /// </para>
     /// </remarks>
     public static void Register()
     {
@@ -47,6 +59,7 @@ public static class CodeBrixAudioOpus
             if (registered) return;
 
             SharedAudioOutput.RegisterCodecFactory(Factory);
+            SharedAudioOutput.RegisterPacketCodecFactory(PacketFactory);
             AudioFileReaderRegistry.Register(".opus", stream => new OpusFileReader(stream));
 
             registered = true;
@@ -59,15 +72,23 @@ public static class CodeBrixAudioOpus
     /// <param name="engine">The engine to register with.</param>
     /// <exception cref="ArgumentNullException"><paramref name="engine" /> is null.</exception>
     /// <remarks>
+    /// <para>
     /// Use this alongside CodeBrix.Audio's ManagedCodecs.RegisterAll when running your own
     /// <see cref="AudioEngine" />. It does not affect the shared output; call
     /// <see cref="Register()" /> for that.
+    /// </para>
+    /// <para>
+    /// Like <see cref="Register()" /> it registers both seams - the stream one and the packet one -
+    /// on the engine you pass. It does NOT register the ".opus" file extension, which is a
+    /// process-wide registry rather than an engine's.
+    /// </para>
     /// </remarks>
     public static void Register(AudioEngine engine)
     {
         if (engine == null) throw new ArgumentNullException(nameof(engine));
 
         engine.RegisterCodecFactory(Factory);
+        engine.RegisterPacketCodecFactory(PacketFactory);
     }
 
     /// <summary>Whether <see cref="Register()" /> has run.</summary>

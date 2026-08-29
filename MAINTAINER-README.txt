@@ -42,7 +42,10 @@ REPOSITORY LAYOUT
       InternalsVisibleTo.cs       opens internals to the .Tests assembly
       Codecs/                     engine-facing: OpusSoundDecoder (derives from
                                   ManagedSoundDecoder), OpusSoundEncoder
-                                  (implements ISoundEncoder), OpusCodecFactory
+                                  (implements ISoundEncoder), OpusCodecFactory,
+                                  and the packet seam - OpusPacketSoundDecoder
+                                  (implements IPacketSoundDecoder) with
+                                  OpusPacketCodecFactory
       Ogg/                        the Ogg container layer - WRITTEN HERE, from
                                   the specifications, not vendored. OggCrc,
                                   OggPage, OggPacket, OggPageReader,
@@ -111,6 +114,129 @@ through this library alone would pass even if both halves shared a bug, so the
 tests also decode what this library WROTE using ffmpeg, and compare. Opus is
 lossy, so those comparisons are tolerance-based (AudioAssertions.cs) rather than
 byte-for-byte.
+
+
+THE PACKET SEAM
+===============
+CodeBrix.Audio has a second decoding seam beside the stream one:
+IPacketCodecFactory / IPacketSoundDecoder, for audio a demultiplexer lifted out
+of a media container as bare codec packets. This repository implements it for
+Opus in Codecs/, as a sibling of the stream implementation, and
+CodeBrixAudioOpus.Register() registers both. Consumer documentation is in
+AGENT-README.txt.
+
+WHERE THE DECODER SITS. OpusPacketSoundDecoder wraps the SAME internal
+OpusDecoder the Ogg reader uses, constructed the same way -
+new OpusDecoder(48000, head.ChannelCount) - and calls the same
+Decode(ReadOnlySpan<byte>, Span<float>, frame_size, decode_fec: false). Nothing
+in Codec/ was touched, and nothing in Ogg/ is on the packet path except
+OpusHead, whose TryParse is the whole header path because a container's
+CodecPrivate IS the identification header. That is why the round-trip test can
+demand SAMPLE-EXACT agreement with OggOpusReader rather than a tolerance: one
+codec, one set of packets, two ways in.
+
+THE UNIT OF PreSkipSamples IS FRAMES PER CHANNEL. The interface says so
+("samples PER CHANNEL"), OpusHead.PreSkip is already in that unit, and the
+Vorbis implementation reports 0 in it. So PreSkipSamples is head.PreSkip
+verbatim, with no channel multiplication - unlike MaxSamplesPerPacket, which
+counts INTERLEAVED samples and is 5760 * channels. Getting those two units the
+same way round is the mistake to watch for; the tests pin both.
+
+WHAT THE DECODER DELIBERATELY DOES NOT DO. It does not discard the pre-skip and
+it does not trim the tail. The stream reader does both because it has the
+granule positions that state them; a packet decoder has neither the position in
+the stream nor the container's fields, so it reports the pre-skip and emits
+everything the packets contain, and the caller applies both. There is no
+Flush/Drain member because the interface has none - the same decision
+CodeBrix.Audio recorded for Vorbis.
+
+A CORRUPT PACKET IS WRAPPED. The vendored codec's OpusException is INTERNAL to
+this assembly, so letting it escape the packet seam would hand a caller an
+exception type it cannot name in a catch clause. DecodePacket wraps any decode
+failure in InvalidDataException, which is what the stream reader already does
+for the same failure, and a test pins it.
+
+AN EMPTY PACKET IS PACKET LOSS. DecodePacket with a zero-length packet runs the
+codec's loss concealment (Decode with empty input), over the last packet's
+duration or 20 ms when nothing has been decoded yet. That is a real capability
+of the vendored codec rather than a stub, and a test pins that the decoder is
+still usable for the next real packet afterwards.
+
+THE RESET / PRE-ROLL MEASUREMENT. Reset() is OpusDecoder.ResetState(), and a
+test pins that a reset decoder and a brand-new one, fed the same packets, agree
+sample for sample - so the residual error after a seek belongs to the codec, not
+to the reset. Measured on the 2 s sweep fixture, feeding pre-roll packets before
+a mid-stream target and comparing the packet after them with an uninterrupted
+decode:
+
+     80 ms (4 packets)   0.074 relative RMS   largest sample difference 0.085
+    120 ms (6 packets)   0.016
+    160 ms (8 packets)   0.003
+    240 ms (12 packets)  0.00002              largest difference 0.000031
+
+80 ms is what RFC 7845 section 4.2 and Matroska's SeekPreRoll ask for, and it is
+plainly NOT convergence for tonal material - the CELT post-filter is a comb
+filter and a pure sweep keeps it ringing. The tests assert the 80 ms figure with
+headroom and assert near-exactness at 240 ms, so a regression in either
+direction shows up. Do not "tighten" the 80 ms bound to the 240 ms one.
+
+THE OUTPUT GAIN IS APPLIED, on both seams (Jeremy, 2026-08-28). RFC 7845 section
+5.1 makes the header's output gain a gain the DECODER applies, and until this
+change neither path did. Both now set IOpusDecoder.Gain from
+OpusHead.OutputGainQ78 once, immediately after constructing the decoder -
+OggOpusReader's constructor and OpusPacketSoundDecoder's.
+
+  * THE UNITS LINE UP EXACTLY, which is why the codec's own control is used
+    rather than a multiply in managed code. The header field is signed Q7.8 dB
+    (gain_dB = value / 256, RFC 7845), and the codec's decode_gain is the same
+    value: opus_decode_frame scales by celt_exp2(QCONST16(6.48814081e-4, 25) *
+    decode_gain), and 6.48814081e-4 is log2(10) / 20 / 256, so the factor is
+    10^((value/256)/20) with the same sign convention. Verified in
+    Codec/Opus/Structs/OpusDecoder.cs before relying on it.
+  * ONE IMPLEMENTATION, ONE ROUNDING. Applying it inside the codec is what keeps
+    the two seams sample-IDENTICAL at a non-zero gain - measured 0.00000000
+    largest difference, and a test asserts exact equality. Two managed
+    multiplies would have been two roundings.
+  * IT SURVIVES ResetState(). decode_gain sits above OPUS_DECODER_RESET_START,
+    so PartialReset() leaves it alone and a seek does not silently restore full
+    volume. Nothing here re-applies it, so two tests guard that - one per path.
+  * IT SATURATES rather than wrapping, at the codec's int16 intermediate. A
+    boost that asks for more than full scale clips - the reference behaviour.
+  * THIS IS A DELIBERATE BEHAVIOUR CHANGE. A file with a non-zero output gain
+    now decodes at a different level than it did in earlier releases -
+    correctly, per the specification. Nothing in practice writes a non-zero gain
+    (every committed fixture stores 0, and so does everything ffmpeg produces),
+    which is why no existing test pinned the old behaviour and none had to
+    change.
+    OpusOutputGainTests.cs re-serialises a fixture's header with a gain in it
+    rather than adding a binary asset.
+
+THE PIN TO CodeBrix.Audio. The packet seam arrived in CodeBrix.Audio, so this
+repository cannot build against a package older than the one carrying it. The
+pin in the library csproj now names a PUBLISHED version on nuget.org, which is
+where it must be whenever this package is published - a pin at a locally packed
+build would ship a .nupkg declaring a dependency nobody can restore.
+
+VERIFYING AGAINST AN UNPUBLISHED CodeBrix.Audio. That situation recurs every time
+the two repositories change together, so the method is recorded rather than the
+episode. Pack CodeBrix.Audio into a folder, raise the pin to that build's
+version, and restore from the folder WITHOUT adding a nuget.config to this
+repository:
+
+    dotnet restore CodeBrix.Audio.Opus.slnx \
+        -p:RestoreSources="<local-feed-folder>%3Bhttps://api.nuget.org/v3/index.json"
+    dotnet build CodeBrix.Audio.Opus.slnx -c Release --no-restore
+
+(%3B is an MSBuild-escaped ';'. The restore puts the package in the global
+packages folder, so every later build resolves it from there without the
+argument.) Then, once the real package is on nuget.org, raise the pin again and
+prove the result restores from nuget.org ALONE:
+
+    dotnet restore CodeBrix.Audio.Opus.slnx --force \
+        -p:RestoreSources="https://api.nuget.org/v3/index.json"
+
+--force is what stops a stale local-feed resolution from being reused, and
+obj/project.assets.json is where to confirm which version was actually taken.
 
 
 PACKAGING AND PUBLISHING
@@ -238,7 +364,11 @@ NOTES
     An explicit call is the contract, and the GameEngine's NotSupportedException
     names this package and that call so a missing one diagnoses itself.
 
-  - Multichannel (channel mapping family 1) is declined rather than mis-mapped.
-    The multistream codec IS vendored, so adding family 1 later is an addition,
-    not a rewrite.
+  - Multichannel (channel mapping family 1) is declined rather than mis-mapped,
+    on both seams. The multistream codec IS vendored, so adding family 1 later
+    is an addition, not a rewrite. The two seams decline DIFFERENTLY on purpose:
+    the stream reader throws InvalidDataException because it has already
+    committed to the stream, while the packet factory throws
+    NotSupportedException because null there means "not my codec" and would be
+    reported to the application as "no registered packet decoder".
 ================================================================================

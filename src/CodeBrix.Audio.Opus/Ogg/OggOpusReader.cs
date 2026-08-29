@@ -20,6 +20,10 @@ namespace CodeBrix.Audio.Opus.Ogg;
 /// priming samples, which a decoder must discard. So the audible length of a stream is
 /// (final granule - pre-skip), and the first samples decoded are thrown away.
 /// </para>
+/// <para>
+/// The header's output gain is applied to everything this reader hands back, which RFC 7845
+/// section 5.1 requires of a decoder. It is 0 in almost every file.
+/// </para>
 /// </remarks>
 internal sealed class OggOpusReader : IDisposable
 {
@@ -64,6 +68,15 @@ internal sealed class OggOpusReader : IDisposable
         ReadHeaders();
 
         decoder = new OpusDecoder(DecodeSampleRate, Head.ChannelCount);
+
+        // RFC 7845 section 5.1: the header's output gain is a gain the DECODER applies, not a
+        // suggestion. The codec's own gain control takes the same Q7.8 dB fixed-point value the
+        // header stores (its scale factor is 2^(value * log2(10)/20/256)), and applying it inside
+        // the codec is what keeps this path and the packet path sample-identical. It survives
+        // ResetState(), which resets only the state below OPUS_DECODER_RESET_START, so a seek does
+        // not silently drop it.
+        decoder.Gain = Head.OutputGainQ78;
+
         frameBuffer = new float[MaxFrameSamples * Head.ChannelCount];
 
         TotalGranule = pages.ReadLastGranulePosition();
