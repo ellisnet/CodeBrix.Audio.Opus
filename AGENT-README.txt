@@ -475,6 +475,10 @@ WHAT THE DECODER REPORTS
                           defines. Size the output buffer to it once and reuse
                           it; then no packet can ever be too big
     PreSkipSamples        the header's pre-skip, counted PER CHANNEL
+    SupportsLossConcealment
+                          true - Opus conceals loss itself, so a reported gap
+                          becomes synthesised audio rather than silence; see
+                          REPORTING PACKET LOSS below
 
 THE HINT IS IGNORED. An Opus stream decodes at 48 kHz and at its own channel
 count, and this decoder converts neither; ask the decoder what it produces
@@ -521,12 +525,96 @@ A CORRUPT PACKET THROWS InvalidDataException, the same exception a corrupt file
 throws, with a message saying the packet could not be decoded. A packet that is
 merely MISSING is a different thing - see the next paragraph.
 
-A LOST PACKET IS AN EMPTY PACKET. Feed a zero-length packet for each packet the
-source knows it dropped and the codec conceals the gap - it invents a plausible
-continuation rather than clicking - and the decoder stays usable for the packets
-that follow. The gap is taken to be as long as the last packet decoded, or 20 ms
-before anything has been decoded. A gap the source does not know about needs
-nothing: feed the next packet you have.
+REPORTING PACKET LOSS
+---------------------
+OPUS CONCEALS LOSS FOR REAL. A codec with no concealment of its own can only
+answer a gap with silence of the right length; Opus synthesises a plausible
+continuation of the audio that went missing - the pitch and the spectral shape
+carry on, and fade as the gap runs long. SupportsLossConcealment is true here
+for exactly that reason: it is how an application tells the two apart without
+having to listen.
+
+  Measured on the 2-second sweep, a gap concealed right after a packet whose
+  RMS was 0.355:
+
+      20 ms  gap    0.350 RMS   (99% of the audio it stands in for)
+      60 ms  gap    0.289
+      120 ms gap    0.226
+      200 ms gap    0.175       - a fifth of a second, still not silence
+
+THERE ARE TWO WAYS TO SAY A PACKET WENT MISSING, and they differ only in whether
+you know HOW LONG the gap was.
+
+  1. AN EMPTY PACKET - the lengthless form. Feed a zero-length packet for each
+     packet the source knows it dropped and the codec conceals one packet's
+     worth. The length is taken to be as long as the LAST REAL PACKET decoded,
+     or 20 ms before anything has been decoded. Nothing about this changed.
+
+  2. AudioPacket.Loss(...) - the form that says how long. A demultiplexer that
+     knows the size of the hole (a timestamp jump, a container discontinuity)
+     reports it and the gap comes out exactly that long:
+
+         packet = AudioPacket.Loss(TimeSpan.FromMilliseconds(40));   // a duration
+         packet = AudioPacket.Loss(1920);                            // or frames
+
+     PacketAudioPlayer routes it to the decoder for you, in helpings, and fills
+     anything the decoder declines with silence - so the audio after a gap stays
+     where it belongs instead of sliding earlier by the length of what was lost.
+     Frames are counted PER CHANNEL at 48 kHz, the same unit as PreSkipSamples.
+
+  A gap the source does not know about needs nothing: feed the next packet you
+  have. Do NOT report loss for an underrun - a reader that has not kept up is a
+  hiccup, not a hole in the timeline.
+
+CALLING ConcealLoss YOURSELF. Decoding packets without a player, the seam is
+IPacketSoundDecoder.ConcealLoss(lostFrames, output), and THE CALLER LOOPS:
+
+    var covered = 0;
+    while (covered < gapFrames)
+    {
+        var produced = decoder.ConcealLoss(gapFrames - covered, output);
+        if (produced <= 0) { /* fill the rest with silence yourself */ break; }
+        Consume(output, produced);
+        covered += produced / decoder.Channels;
+    }
+
+Ask for the frames STILL MISSING each time, not for a chunk size of your own -
+the decoder picks the step.
+
+THE CHUNKING RULE, because Opus conceals in fixed steps. Concealment runs in
+whole 2.5 ms steps (120 frames at 48 kHz) and never covers more than 120 ms
+(5760 frames) in one call, so a long gap takes several calls:
+
+    a 20 ms gap  (960 frames)    one call,  960 frames
+    a 60 ms gap  (2880)          one call
+    a 120 ms gap (5760)          one call - the most a single call can do
+    a 200 ms gap (9600)          two calls, 5760 then 3840
+
+  THE REMAINDER, when a gap is not a whole number of 2.5 ms steps. The chunk is
+  rounded DOWN to whole steps, so a 1000-frame gap comes back as 960 and then
+  40. That last call runs a whole 2.5 ms step, because there is nothing shorter
+  to ask the codec for, but IT REPORTS ONLY THE 40 FRAMES THAT WERE ASKED FOR -
+  the return value is the length you may use, and the surplus sits past it in
+  the buffer to be ignored. The decoder's own state advances by up to 2.5 ms
+  more than was lost; nothing downstream sees it.
+
+  Size the output buffer to MaxSamplesPerPacket, as for DecodePacket. A buffer
+  too small to hold one 2.5 ms step conceals nothing and returns 0 rather than
+  throwing - the interface's "fill it yourself" answer.
+
+AFTER Reset(), AND BEFORE THE FIRST PACKET, CONCEALMENT IS SILENCE. There is no
+previous audio to continue, so the codec answers with zeros of exactly the
+length asked for. It does not throw and it does not come back short, so a player
+that has to cover a gap before its seek pre-roll is fed still gets a gap of the
+right length - it just will not sound like anything.
+
+CONCEALMENT IS MEDIA TIME. It advances the decoder's state exactly as a decoded
+packet does: the packets after a gap are decoded as the ones that follow it, and
+no Reset() is needed. The first packet after a gap IS wrong, because it is
+decoded against the state the concealment left behind - measured on the sweep,
+0.47 relative RMS over the first 20 ms - and the codec then pulls back to 0.007
+from 80 ms after the gap and to 0.00004 from 240 ms. The same shape as a seek
+pre-roll, and for the same reason.
 
 MONO AND STEREO ONLY, and the refusal says so. Channel mapping family 0, the
 same limit the file reader has. A family-1 (surround) header does not return
@@ -788,6 +876,21 @@ The test suite is the executable documentation for everything above.
                               Reset() and how much closer 240 ms gets; that
                               Reset() leaves the decoder identical to a new one;
                               and that a lost (empty) packet is concealed.
+  OpusPacketLossTests.cs      REAL packet-loss concealment: that Opus declares
+                              it, that a gap of 20 / 25 / 60 / 120 / 200 ms comes
+                              back exactly as long as it was and in how many
+                              calls, what a gap that is not a whole number of
+                              2.5 ms steps does, that the concealment is audio
+                              rather than silence (measured against the packet
+                              before it), that the stream re-converges after a
+                              gap, that concealment after Reset() is silence and
+                              not an exception, and that a concealed gap does not
+                              change what an EMPTY packet means afterwards.
+  OpusPacketLossPlaybackTests.cs
+                              A source that loses two packets and reports them
+                              with AudioPacket.Loss, played to a real device:
+                              the stream is exactly as long as an unbroken one.
+                              Opt-in.
   OpusOutputGainTests.cs      The identification header's output gain, on BOTH
                               decode paths: that it scales by the factor the
                               header states, that a boost past full scale
@@ -857,6 +960,10 @@ QUICK REFERENCE CARD
             PreSkipSamples is REPORTED, not applied; the tail is not trimmed
             Reset() + >= 80 ms of pre-roll after the source jumps
             an EMPTY packet = a lost one = concealed, not an error
+            AudioPacket.Loss(duration|frames) = a gap of a KNOWN length
+            SupportsLossConcealment is TRUE; ConcealLoss conceals in 2.5 ms
+            steps, at most 120 ms a call, and the CALLER LOOPS
+            concealment after Reset() is silence, not an exception
 
   SEVEN PUBLIC TYPES
     CodeBrixAudioOpus      Register() / Register(AudioEngine) / IsRegistered

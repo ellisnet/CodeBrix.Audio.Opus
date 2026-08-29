@@ -41,12 +41,25 @@ internal sealed class OpusPacketSoundDecoder : IPacketSoundDecoder
     /// </summary>
     private const int DefaultConcealmentSamples = 960;
 
+    /// <summary>
+    /// The smallest stretch Opus will conceal in one go, per channel: 2.5 ms at 48 kHz. Every
+    /// concealment length the codec accepts is a whole number of these.
+    /// </summary>
+    private const int ConcealmentStepSamples = 120;
+
     private readonly object syncLock = new object();
     private readonly int channels;
     private readonly int preSkip;
 
     private IOpusDecoder decoder;
     private bool disposed;
+
+    // How long the last REAL packet was, per channel - the guess an empty packet is concealed for.
+    // The codec's own LastPacketDuration cannot be used for it, because concealment updates that
+    // too: after ConcealLoss(5760) it reads 5760, and an empty packet arriving next would then be
+    // taken to mean 120 ms of loss rather than one 20 ms packet. This is only ever set by a packet
+    // that carried bytes, and Reset clears it exactly as the codec clears its own.
+    private int lastRealPacketFrames;
 
     /// <summary>Creates a decoder from a parsed Opus identification header.</summary>
     /// <param name="head">
@@ -104,12 +117,18 @@ internal sealed class OpusPacketSoundDecoder : IPacketSoundDecoder
     /// The packet is corrupt, truncated, or not an Opus packet.
     /// </exception>
     /// <remarks>
+    /// <para>
     /// AN EMPTY PACKET MEANS A LOST ONE, and is concealed rather than refused: the codec is asked
     /// to invent a plausible continuation for the audio that went missing (packet loss
     /// concealment), which is what keeps a live stream from clicking at every dropped packet. The
-    /// gap is taken to be as long as the last packet decoded, or 20 ms when nothing has been
+    /// gap is taken to be as long as the last real packet decoded, or 20 ms when nothing has been
     /// decoded yet. Feed a zero-length packet for every packet the source knows it lost, and
     /// nothing at all for a gap it does not know about.
+    /// </para>
+    /// <para>
+    /// A CALLER THAT KNOWS HOW LONG THE GAP WAS should call <see cref="ConcealLoss" /> instead,
+    /// which conceals the length the container actually lost rather than assuming one packet.
+    /// </para>
     /// </remarks>
     public int DecodePacket(ReadOnlySpan<byte> packet, Span<float> output)
     {
@@ -155,7 +174,119 @@ internal sealed class OpusPacketSoundDecoder : IPacketSoundDecoder
                     "Opus packet at all.", ex);
             }
 
-            return decoded > 0 ? decoded * channels : 0;
+            if (decoded <= 0) return 0;
+
+            if (!packet.IsEmpty)
+            {
+                lastRealPacketFrames = decoded;
+            }
+
+            return decoded * channels;
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// True: packet-loss concealment is part of the Opus specification, so a gap here becomes
+    /// SYNTHESISED AUDIO that continues the pitch and the spectral shape of what came before it,
+    /// not the silence a codec without concealment has to fall back on.
+    /// </remarks>
+    public bool SupportsLossConcealment => true;
+
+    /// <inheritdoc />
+    /// <exception cref="InvalidDataException">
+    /// The codec refused to conceal. It cannot happen for a buffer sized to
+    /// <see cref="MaxSamplesPerPacket" />, because every length this asks for is one the codec
+    /// accepts; it is reported rather than swallowed so a defect here cannot be mistaken for a
+    /// codec that simply has no concealment.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// THE CHUNKING RULE. Opus conceals in whole steps of 2.5 ms - 120 frames at 48 kHz - and never
+    /// more than 120 ms (5760 frames) in one call, so a gap is covered over several calls and this
+    /// returns what ONE call covered:
+    /// </para>
+    /// <list type="number">
+    /// <item>
+    /// the room available is <c>output.Length / Channels</c>, capped at 5760 frames;
+    /// </item>
+    /// <item>
+    /// a buffer with room for less than one 2.5 ms step conceals nothing and returns 0, so the
+    /// caller fills the gap itself - it is not an error, and it cannot happen for a buffer sized to
+    /// <see cref="MaxSamplesPerPacket" />;
+    /// </item>
+    /// <item>
+    /// otherwise the chunk is the smaller of <paramref name="lostFrames" /> and the room, ROUNDED
+    /// DOWN to a whole number of 2.5 ms steps - so a gap that is a multiple of 120 frames is
+    /// covered exactly, with nothing left over;
+    /// </item>
+    /// <item>
+    /// THE REMAINDER. When what is left of the gap is shorter than 2.5 ms, rounding down would
+    /// reach zero and the loop would never finish, so the chunk is ROUNDED UP to one 2.5 ms step.
+    /// The codec's state therefore advances by up to 2.5 ms more than was lost - there is no
+    /// shorter concealment to ask it for - but the RETURN VALUE is still capped at
+    /// <paramref name="lostFrames" />, so the caller is told exactly the length it asked about and
+    /// the timeline keeps its shape to the sample. The surplus frames are written into the buffer
+    /// past the returned count and are meant to be ignored.
+    /// </item>
+    /// </list>
+    /// <para>
+    /// AFTER <see cref="Reset" />, AND BEFORE THE FIRST PACKET, THIS PRODUCES SILENCE. Concealment
+    /// continues the audio the decoder last saw, and a decoder that has been reset has not seen
+    /// any: the codec answers with zeros of exactly the length asked for rather than refusing. It
+    /// is safe to call, in other words, but it is not worth calling until a real packet has been
+    /// decoded - which is also why a player seeking into a stream feeds its pre-roll first.
+    /// </para>
+    /// <para>
+    /// <see cref="DecodePacket" /> with an EMPTY packet is unchanged and still conceals one
+    /// packet's worth - the last packet's duration, or 20 ms before anything has been decoded.
+    /// That is the lengthless convention; this method is the one that knows how long the gap was.
+    /// </para>
+    /// </remarks>
+    public int ConcealLoss(int lostFrames, Span<float> output)
+    {
+        lock (syncLock)
+        {
+            if (disposed || lostFrames <= 0) return 0;
+
+            var room = Math.Min(output.Length / channels, MaxFrameSamples);
+
+            if (room < ConcealmentStepSamples)
+            {
+                // Not even one 2.5 ms step fits. Nothing to do but let the caller fill the gap.
+                return 0;
+            }
+
+            var wanted = Math.Min(lostFrames, room);
+            var chunk = wanted / ConcealmentStepSamples * ConcealmentStepSamples;
+
+            if (chunk == 0)
+            {
+                // The remainder: less than one step is still asked for, and the codec has no
+                // shorter concealment than a step. Round up, and report only what was asked for.
+                chunk = ConcealmentStepSamples;
+            }
+
+            int concealed;
+
+            try
+            {
+                concealed = decoder.Decode(
+                    ReadOnlySpan<byte>.Empty, output, chunk, decode_fec: false);
+            }
+            catch (Exception ex)
+            {
+                // The codec's own exception type is internal to this assembly, so letting it out
+                // would hand the caller something it cannot name in a catch clause.
+                throw new InvalidDataException(
+                    $"This Opus decoder could not conceal a gap of {chunk} frames per channel.", ex);
+            }
+
+            if (concealed <= 0) return 0;
+
+            // Never claim more than the gap: the rounded-up surplus is in the buffer, but it is not
+            // part of the loss and counting it would push everything after the gap out of place.
+            return Math.Min(concealed, lostFrames) * channels;
         }
     }
 
@@ -166,6 +297,7 @@ internal sealed class OpusPacketSoundDecoder : IPacketSoundDecoder
         {
             if (disposed) return;
 
+            lastRealPacketFrames = 0;
             decoder.ResetState();
         }
     }
@@ -185,12 +317,15 @@ internal sealed class OpusPacketSoundDecoder : IPacketSoundDecoder
 
     /// <summary>How long a gap to conceal for a lost packet, in samples per channel.</summary>
     /// <remarks>
-    /// The last packet's duration is the best guess available - a stream's packets are almost
+    /// The last REAL packet's duration is the best guess available - a stream's packets are almost
     /// always all the same length - and 20 ms is the fallback before any packet has been decoded.
+    /// Concealment already produced does not count towards it: a gap covered by
+    /// <see cref="ConcealLoss" /> would otherwise redefine what "one packet" means for the empty
+    /// packet after it.
     /// </remarks>
     private int ConcealmentFrames()
     {
-        var last = decoder.LastPacketDuration;
+        var last = lastRealPacketFrames;
 
         return last > 0 && last <= MaxFrameSamples ? last : DefaultConcealmentSamples;
     }

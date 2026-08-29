@@ -157,10 +157,128 @@ failure in InvalidDataException, which is what the stream reader already does
 for the same failure, and a test pins it.
 
 AN EMPTY PACKET IS PACKET LOSS. DecodePacket with a zero-length packet runs the
-codec's loss concealment (Decode with empty input), over the last packet's
+codec's loss concealment (Decode with empty input), over the last REAL packet's
 duration or 20 ms when nothing has been decoded yet. That is a real capability
 of the vendored codec rather than a stub, and a test pins that the decoder is
 still usable for the next real packet afterwards.
+
+  THE LENGTH IS REMEMBERED HERE, NOT READ OFF THE CODEC (2026-08-29). It used to
+  be IOpusDecoder.LastPacketDuration, which the codec updates for CONCEALMENT as
+  well as for decoding: after a 120 ms ConcealLoss it reads 5760, and the next
+  empty packet would then have been taken to mean 120 ms of loss rather than one
+  20 ms packet. OpusPacketSoundDecoder now keeps lastRealPacketFrames itself,
+  set only by a packet that carried bytes and cleared by Reset() exactly as the
+  codec clears its own. For every path that existed before ConcealLoss the two
+  values are identical, so nothing observable changed; the regression test is
+  OpusPacketLossTests.Concealment_does_not_redefine_what_one_lost_packet_means.
+
+REAL LOSS CONCEALMENT - ConcealLoss AND SupportsLossConcealment (2026-08-29)
+---------------------------------------------------------------------------
+CodeBrix.Audio's IPacketSoundDecoder gained two DEFAULT interface members: a
+SupportsLossConcealment that is false, and a ConcealLoss(lostFrames, output)
+that forwards to the empty-packet convention. This decoder OVERRIDES BOTH,
+because Opus has concealment in the specification and the empty-packet form
+cannot say how long a gap was.
+
+WHY THE OVERRIDE EXISTS AT ALL. The empty-packet path conceals ONE PACKET, and
+guesses its length. A container that records a discontinuity knows the real
+length, and a gap concealed at the wrong length slides everything after it. The
+default member would have been correct-ish and quietly wrong on length; this is
+correct on length.
+
+THE CHUNKING RULE, and where the 2.5 ms comes from. Codec/Opus/Structs/
+OpusDecoder.cs, opus_decode_native, refuses a PLC frame size that is not a
+multiple of Fs/400 - 120 frames at 48 kHz - and opus_decode_frame clamps a
+request to Fs/25*3 = 5760. So:
+
+    room   = min(output.Length / channels, 5760)
+    if room < 120                 -> return 0        (caller fills the gap)
+    chunk  = (min(lostFrames, room) / 120) * 120     (round DOWN to steps)
+    if chunk == 0 -> chunk = 120                     (the remainder; round UP)
+    return min(chunk, lostFrames) * channels
+
+  ROUNDING DOWN is what makes a gap that is a whole number of steps come out
+  exactly, over as few calls as possible: 9600 frames (200 ms) is 5760 + 3840,
+  two calls, not seven.
+
+  THE REMAINDER IS THE ONLY INTERESTING CASE. A gap of 1000 frames is 960 and
+  then 40, and there is no 40-frame concealment to ask the codec for. The last
+  call runs a whole 120-frame step and RETURNS 40. That was a deliberate choice
+  between two defensible answers:
+      - return the 120 that were produced, and let the caller trim. The player
+        does cap what comes back at the remaining gap, so this works THERE; a
+        caller looping on the interface's own rule would overshoot by 80 frames.
+      - return the 40 that were asked for. The loop terminates exactly, the
+        timeline is exact for every caller, and the surplus sits unread past the
+        returned count.
+  The second was taken. What it costs is that the DECODER'S STATE advances by up
+  to 2.5 ms more than was lost - unavoidable, since the codec has no shorter
+  step - and that is documented on the method rather than hidden.
+
+WHY THE CANONICAL FRAME LADDER (120/240/480/960/1920/2880/5760) IS NOT USED.
+Any multiple of 120 is legal at the API, and opus_decode_native decomposes what
+it is given by the last packet's own frame size, so a 3840-frame request becomes
+four 960-frame PLC frames internally. Restricting the chunk to the ladder would
+only add calls. Every ladder value AND several non-ladder multiples are exercised
+by OpusPacketLossTests.Every_fixture_conceals_every_step_size_without_complaint,
+on all three fixtures including the 16 kHz-sourced one, which is the one that
+reaches the codec's speech path.
+
+A TOO-SMALL BUFFER RETURNS 0 RATHER THAN THROWING, unlike DecodePacket, which
+throws ArgumentException naming MaxSamplesPerPacket. The interface makes zero a
+legitimate answer to ConcealLoss ("a caller that gets nothing back fills the gap
+itself"), and a player that hit an exception here would end a track over a lost
+packet. It cannot happen for a buffer sized to MaxSamplesPerPacket, and it is
+documented on the method.
+
+A CODEC FAILURE IS STILL WRAPPED AND STILL THROWN. Every length ConcealLoss asks
+for is one the codec accepts, so InvalidDataException from here means a defect
+in this file or in the vendored codec, not bad data. Swallowing it would make
+that defect indistinguishable from a codec with no concealment - which is the
+one thing SupportsLossConcealment = true promises it is not.
+
+AFTER Reset(), CONCEALMENT IS SILENCE, AND THAT IS THE CODEC'S OWN ANSWER.
+ResetState() sets prev_mode = 0 and frame_size = Fs/400, and opus_decode_frame's
+"if we haven't got any packet yet, all we can do is return zeros" branch then
+writes zeros and returns the size asked for. So the gap comes out the right
+LENGTH with no audio in it, and nothing throws and nothing loops. Worth knowing:
+the do-loop in opus_decode_native would spin for ever if that branch ever
+returned 0, which it cannot, because this.frame_size is never below 120 after an
+init or a reset. Do not "simplify" ResetState.
+
+CONCEALMENT ADVANCES MEDIA TIME, and the first packet after a gap is decoded
+against the state the concealment left. Measured on the 2 s sweep, two 20 ms
+packets dropped at frame 19200 and concealed:
+
+    the concealed 40 ms       0.308 RMS against 0.355 for the real audio
+    first 20 ms after it      0.466 relative RMS  - plainly wrong, as expected
+    from  80 ms after it on   0.0070
+    from 240 ms after it on   0.000035
+
+The tests hold 80 ms to < 0.02 and 240 ms to < 0.0005, and assert that the first
+20 ms IS wrong (> 0.1) so a change that made the numbers "better" by producing
+silence could not pass unnoticed. The shape is the seek pre-roll's shape, for
+the same reason.
+
+WHAT THE PLAYER DOES WITH IT, and why nothing here has to know. PacketAudioPlayer
+converts an AudioPacket.Loss to frames, then asks ConcealLoss for the frames
+STILL MISSING - not for a chunk size - caps what comes back at both the remaining
+gap and its buffer, and writes silence of the same length if a call returns
+nothing. That is why returning less than was asked for is safe, and why this
+implementation never tries to cover a whole gap in one call.
+
+TESTING THE PLAYER SEAM FROM HERE IS ONLY POSSIBLE WITH A DEVICE.
+PacketAudioPlayer.PacketDecoderAdapter is internal to CodeBrix.Audio with
+InternalsVisibleTo("CodeBrix.Audio.Tests") only, so this repository cannot drive
+the player device-free the way CodeBrix.Audio's own loss tests do. The
+end-to-end claim is therefore made by OpusPacketLossPlaybackTests, gated on
+CODEBRIX_AUDIO_RUN_PLAYBACK_TESTS=1, which plays a motif with two packets
+dropped and asserts that PacketAudioPlayer.Position reports exactly the frame
+count an unbroken decode produces. Position counts frames read from the PACKETS
+(ReadSourceSamples), before any channel or rate conversion, so the device's own
+rate does not enter into it - but the test still configures the shared output to
+48 kHz WHEN IT IS NOT ALREADY RUNNING, because Configure throws on a running
+output and another sounding test may have started it first.
 
 THE RESET / PRE-ROLL MEASUREMENT. Reset() is OpusDecoder.ResetState(), and a
 test pins that a reset decoder and a brand-new one, fed the same packets, agree
@@ -213,9 +331,18 @@ OggOpusReader's constructor and OpusPacketSoundDecoder's.
 
 THE PIN TO CodeBrix.Audio. The packet seam arrived in CodeBrix.Audio, so this
 repository cannot build against a package older than the one carrying it. The
-pin in the library csproj now names a PUBLISHED version on nuget.org, which is
-where it must be whenever this package is published - a pin at a locally packed
-build would ship a .nupkg declaring a dependency nobody can restore.
+pin in the library csproj must name a PUBLISHED version on nuget.org whenever
+this package is published - a pin at a locally packed build would ship a .nupkg
+declaring a dependency nobody can restore.
+
+  >> AS THINGS STAND THE PIN IS A LOCAL PACK AND MUST BE RAISED BEFORE PUBLISH.
+     CodeBrix.Audio.MitLicenseForever 1.0.241.460 is the LOCAL build carrying
+     ConcealLoss, SupportsLossConcealment and AudioPacket.Loss, packed to
+     ~/ClaudeHome/localfeed_codebrix_audio_2026-08-29/. Raise the pin to the
+     published version of that work, restore from nuget.org ALONE with --force,
+     and re-run the suite before publishing this package. (The previous pin,
+     1.0.241.72, is published but has neither member, so it will not build the
+     ConcealLoss override.)
 
 VERIFYING AGAINST AN UNPUBLISHED CodeBrix.Audio. That situation recurs every time
 the two repositories change together, so the method is recorded rather than the
