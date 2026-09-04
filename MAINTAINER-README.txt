@@ -56,9 +56,16 @@ REPOSITORY LAYOUT
   tests/CodeBrix.Audio.Opus.Tests/  the xUnit v3 test project
   tests/Assets/audio/               generated fixtures (see EXTRAS-README.txt)
   tools/make_test_fixtures/         the fixture generator (see EXTRAS-README.txt)
-  CodeBrix.Audio.Opus.slnx          the solution
-  global.json                       pins the test runner to
-                                    Microsoft.Testing.Platform
+  CodeBrix.Audio.Opus.slnx          the solution. Its Solution Items folder
+                                    carries .gitignore, AGENT-README.txt,
+                                    EXTRAS-README.txt, global.json,
+                                    icon-codebrix-128.png, LICENSE,
+                                    MAINTAINER-README.txt, README-INDEX.txt,
+                                    README.md and THIRD-PARTY-NOTICES.txt; the
+                                    Tests folder carries the test project
+  global.json                       selects the Microsoft.Testing.Platform test
+                                    runner. It does NOT pin an SDK version -
+                                    see TESTING
   .editorconfig                     carries the one scoped warning suppression
   THIRD-PARTY-NOTICES.txt           the authoritative provenance record
 
@@ -87,8 +94,21 @@ SilverAssertions. Run them with:
 
     dotnet test CodeBrix.Audio.Opus.slnx
 
-global.json pins the runner to Microsoft.Testing.Platform, which is what
-xunit.v3 4.x expects.
+THE TEST RUNNER IS Microsoft.Testing.Platform (MTP), selected by global.json at
+the repo root:
+
+    { "test": { "runner": "Microsoft.Testing.Platform" } }
+
+That is what xunit.v3 4.x expects. The file pins no SDK version, so the newest
+installed .NET 10 SDK is still the one used; because the setting lives in
+global.json rather than in a csproj it applies to every `dotnet test` run
+anywhere in the repository. Keep the file committed.
+
+Test dependencies are xunit.v3, xunit.runner.visualstudio,
+Microsoft.NET.Test.Sdk and SilverAssertions.ApacheLicenseForever - that is the
+whole list. There is no coverage collector: coverlet.collector is NOT
+referenced, so nothing here produces a coverage report and no doc should claim
+one.
 
 Tests that open a real audio device and make sound are OPT-IN, so a normal run
 is silent and headless-safe:
@@ -335,26 +355,32 @@ pin in the library csproj must name a PUBLISHED version on nuget.org whenever
 this package is published - a pin at a locally packed build would ship a .nupkg
 declaring a dependency nobody can restore.
 
-  THE PIN IS PUBLISHED AND THIS PACKAGE IS PUBLISHABLE.
-  CodeBrix.Audio.MitLicenseForever 1.0.241.985 is the PUBLISHED build carrying
-  ConcealLoss, SupportsLossConcealment and AudioPacket.Loss, and it is what the
-  library csproj names (raised 2026-08-29 from the local pack 1.0.241.460 that
-  the work was developed against). Verified by restoring from nuget.org ALONE:
-  obj/project.assets.json resolves CodeBrix.Audio.MitLicenseForever/1.0.241.985
-  and lists no local feed among its sources, and the packed .nuspec declares
-  that same version as its only dependency.
+  THE TWO PACKAGES MOVE TOGETHER. The library csproj pins the version of
+  CodeBrix.Audio this repository was built against, and that PackageReference
+  is the one place the number belongs - it is never written into
+  AGENT-README.txt, README.md or this file. When work here needs something new
+  from CodeBrix.Audio, publish CodeBrix.Audio first and then raise this pin to
+  that published build: bump both together, in that order.
 
-  Anything at or below 1.0.241.72 is too old: those releases have neither
-  ConcealLoss nor SupportsLossConcealment on IPacketSoundDecoder, so
-  OpusPacketSoundDecoder's overrides will not compile against them.
+  A pin that is too old fails at COMPILE time, not at run time, which is the
+  cheap failure to have. OpusPacketSoundDecoder overrides ConcealLoss and
+  SupportsLossConcealment on IPacketSoundDecoder, and the concealment tests use
+  AudioPacket.Loss, so a CodeBrix.Audio without those members will not build
+  here at all.
+
+  Before publishing, prove the pin resolves from nuget.org ALONE: restore with
+  nuget.org as the only source, then check that obj/project.assets.json
+  resolves CodeBrix.Audio.MitLicenseForever from it with no local feed among
+  its sources, and that the packed .nuspec declares that same version as its
+  only dependency.
 
 VERIFYING AGAINST AN UNPUBLISHED CodeBrix.Audio - THE PRE-PUBLISH METHOD. That
 situation recurs every time the two repositories change together, so the method
 is recorded rather than the episode. It is how the concealment work above was
-developed and gated before CodeBrix.Audio 1.0.241.985 existed, and it is what to
-do again next time. Pack CodeBrix.Audio into a folder, raise the pin to that
-build's version, and restore from the folder WITHOUT adding a nuget.config to
-this repository:
+developed and gated before the CodeBrix.Audio build carrying it was published,
+and it is what to do again next time. Pack CodeBrix.Audio into a folder, raise
+the pin to that build's version, and restore from the folder WITHOUT adding a
+nuget.config to this repository:
 
     dotnet restore CodeBrix.Audio.Opus.slnx \
         -p:RestoreSources="<local-feed-folder>%3Bhttps://api.nuget.org/v3/index.json"
@@ -485,10 +511,11 @@ NOTES
     the decoder discards, so audible length = final granule - pre-skip. Both the
     reader and the writer handle it, and tests pin both directions.
 
-  - Register() holds ONE OpusCodecFactory instance in a static field on purpose.
-    SharedAudioOutput.RegisterCodecFactory de-duplicates on the INSTANCE, so
-    constructing a fresh factory per call would register the codec repeatedly.
-    Do not "simplify" that field away.
+  - Register() holds ONE OpusCodecFactory AND one OpusPacketCodecFactory
+    instance, each in a static field, on purpose. SharedAudioOutput
+    .RegisterCodecFactory and .RegisterPacketCodecFactory both de-duplicate on
+    the INSTANCE, so constructing a fresh factory per call would register that
+    codec repeatedly. Two fields, one reason. Do not "simplify" either away.
 
   - There is deliberately no [ModuleInitializer] doing the registration. A
     module initializer only runs once something in the assembly is touched,

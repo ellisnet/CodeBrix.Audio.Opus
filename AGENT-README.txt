@@ -40,8 +40,9 @@ needs to. A format arriving by that route declares no file-on-disk requirement,
 which is the same flag that makes short clips eligible for PCM preload, so
 .opus preloads exactly like .ogg rather than decoding on the audio thread.
 
-Provenance: the codec under src/CodeBrix.Audio.Opus/Codec/ is a port of
-Concentus 2.2.2 (BSD-3-Clause), demoted to internal types; the Ogg container
+Provenance: the codec under src/CodeBrix.Audio.Opus/Codec/ is a vendored port
+of the Concentus project (BSD-3-Clause), demoted to internal types; the Ogg
+container
 layer around it was written here from RFC 3533 and RFC 7845 rather than
 vendored. Use the CodeBrix.Audio.Opus namespace - never the upstream project's
 namespaces, which do not exist in this assembly. THIRD-PARTY-NOTICES.txt is the

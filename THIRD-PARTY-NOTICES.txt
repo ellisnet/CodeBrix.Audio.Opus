@@ -42,18 +42,35 @@ Version:    2.2.2
 Commit:     3885c4e46513ef0fc81fca100189e54f1714c6ca (2025-09-27)
 License:    BSD 3-Clause ("the Opus licence" - the standard Xiph.Org / IETF text)
 
-Copyright holders. The upstream LICENSE names nine parties and says "including
-but not limited to"; two more appear only in the headers of individual source
-files. All eleven are reproduced here, the file headers being authoritative:
+Maintainer: Logan Stromberg (https://github.com/lostromb), named as the sole
+            author in Concentus's own package metadata. He is also one of the
+            copyright holders listed below.
 
-    Skype Limited                     Jean-Marc Valin
-    Xiph.Org Foundation               Gregory Maxwell
-    CSIRO                             Mark Borgerding
-    Microsoft Corporation             Timothy B. Terriberry
-    Logan Stromberg                   Thorvald Natvig
-    Octasic Inc.
+Copyright holders. Eleven parties hold copyright in the vendored code. The
+upstream LICENSE names nine and says "including but not limited to"; two more -
+Thorvald Natvig and Octasic Inc. - appear only in the headers of individual
+source files. The two sources are read together, and all eleven are reproduced
+here:
 
-Every vendored file retains its upstream copyright header verbatim.
+    Timothy B. Terriberry              (c) 2001-2011
+    Mark Borgerding                    (c) 2003-2004
+    Skype Limited                      (c) 2006-2011
+    Jean-Marc Valin                    (c) 2007-2008
+    CSIRO                              (c) 2007-2008
+    Xiph.Org Foundation                (c) 2007-2011
+    Thorvald Natvig                    (c) 2008
+    Octasic Inc.                       (c) 2008-2011
+    Logan Stromberg                    (c) 2016, 2024
+    Microsoft Corporation              named in the upstream LICENSE
+    Gregory Maxwell                    named in the upstream LICENSE
+
+The year ranges are the ones carried by the vendored file headers themselves.
+Microsoft Corporation and Gregory Maxwell head no file vendored here; they are
+listed because the upstream LICENSE names them and its "including but not
+limited to" wording makes that list non-exhaustive.
+
+Every one of the 133 vendored files retains its upstream copyright header
+verbatim, and every one carries a copyright header.
 
 WHAT WAS VENDORED
     133 .cs files from CSharp/Concentus/ - the SILK and CELT layers, the Opus

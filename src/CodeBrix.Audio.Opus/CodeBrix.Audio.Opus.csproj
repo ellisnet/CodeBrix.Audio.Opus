@@ -53,18 +53,18 @@
     <Product>CodeBrix.Audio.Opus</Product>
     <Title>CodeBrix.Audio.Opus</Title>
     <Authors>Jeremy Ellis</Authors>
-    <Description>Fully managed Ogg Opus decoding and encoding for CodeBrix.Audio, with no native binaries on any platform. Registers itself with the CodeBrix.Audio engine so .opus files play through AudioFilePlayer, SoundEffectClip and the GameEngine, open by file name through AudioFileReader, and record through the engine's Recorder. Ships separately from CodeBrix.Audio because the Opus codec is BSD-3-Clause rather than MIT.</Description>
+    <Description>Fully managed Ogg Opus decoding and encoding for CodeBrix.Audio, with no native binaries on any platform. Registers itself with the CodeBrix.Audio engine so .opus files play through AudioFilePlayer, SoundEffectClip and the GameEngine, open by file name through AudioFileReader, and record through the engine's Recorder; the same call teaches the engine's packet seam Opus, so the bare Opus packets a media container carries decode too. Ships separately from CodeBrix.Audio because the Opus codec is BSD-3-Clause rather than MIT.</Description>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/ellisnet/CodeBrix.Audio.Opus</PackageProjectUrl>
     <RepositoryUrl>https://github.com/ellisnet/CodeBrix.Audio.Opus</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageIcon>icon-codebrix-128.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <Copyright>Copyright (c) Xiph.Org Foundation, Skype Limited, CSIRO, Microsoft Corporation, Jean-Marc Valin, Gregory Maxwell, Mark Borgerding, Timothy B. Terriberry and Logan Stromberg. Copyright (c) 2020 Andrew Ward and Logan Stromberg. Copyright (c) 2026 Jeremy Ellis and contributors</Copyright>
+    <Copyright>Copyright (c) 2026 Jeremy Ellis and contributors</Copyright>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
     <IsPackable>true</IsPackable>
-    <PackageTags>opus;audio;codec;decoder;encoder;ogg;voice;CodeBrix</PackageTags>
+    <PackageTags>opus;audio;codec;decoder;encoder;ogg;packets;container;voice;CodeBrix</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

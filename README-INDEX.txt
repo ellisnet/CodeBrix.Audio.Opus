@@ -10,9 +10,10 @@ are changing this repository itself.
 AGENT-README FILES (consumer documentation, one per NuGet package)
 ------------------------------------------------------------------
   AGENT-README.txt
-      CodeBrix.Audio.Opus.BsdLicenseForever - fully managed Ogg Opus (.opus)
-      decoding and encoding for CodeBrix.Audio, with no native binaries on any
-      platform.
+      CodeBrix.Audio.Opus.BsdLicenseForever - fully managed Opus decoding and
+      encoding for CodeBrix.Audio - both Ogg Opus (.opus) files and the bare
+      container Opus packets a demultiplexer produces - with no native binaries
+      on any platform.
 
 MAINTAINER AND EXTRAS
 ---------------------
@@ -28,4 +29,6 @@ GENERAL
       Human-facing overview shown on GitHub and nuget.org.
   README-INDEX.txt
       This file.
+  THIRD-PARTY-NOTICES.txt
+      What came from where, and under which licences.
 ================================================================================
