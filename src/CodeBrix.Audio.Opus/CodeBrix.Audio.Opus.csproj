@@ -53,7 +53,7 @@
     <Product>CodeBrix.Audio.Opus</Product>
     <Title>CodeBrix.Audio.Opus</Title>
     <Authors>Jeremy Ellis</Authors>
-    <Description>Fully managed Ogg Opus decoding and encoding for CodeBrix.Audio, with no native binaries on any platform. Registers itself with the CodeBrix.Audio engine so .opus files play through AudioFilePlayer, SoundEffectClip and the GameEngine, open by file name through AudioFileReader, and record through the engine's Recorder; the same call teaches the engine's packet seam Opus, so the bare Opus packets a media container carries decode too. Ships separately from CodeBrix.Audio because the Opus codec is BSD-3-Clause rather than MIT.</Description>
+    <Description>Adds support for the Opus audio format to your app's audio playback and recording, with no native code required. Once added, Opus files and streams play back the same way as any other supported audio format. Ships as a separate add-on so you only include Opus support when you actually need it.</Description>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/ellisnet/CodeBrix.Audio.Opus</PackageProjectUrl>
     <RepositoryUrl>https://github.com/ellisnet/CodeBrix.Audio.Opus</RepositoryUrl>
