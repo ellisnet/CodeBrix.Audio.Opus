@@ -13,8 +13,9 @@ namespace CodeBrix.Audio.Opus;
 /// <para>
 /// Call it once, early, before anything opens audio. Afterwards .opus files play through
 /// AudioFilePlayer, SoundEffectClip, WaveOutEvent, the CodeBrix.Platform AudioPlayer add-in and
-/// the GameEngine, open by file name through AudioFileReader, and can be recorded by the engine's
-/// Recorder - none of which need any other change.
+/// the GameEngine, open by file name through AudioFileReader, are written by file name through
+/// AudioFileWriterRegistry, and can be recorded by the engine's Recorder - none of which need any
+/// other change.
 /// </para>
 /// <para>
 /// There is deliberately NO module initializer doing this for you. A module initializer only runs
@@ -36,10 +37,18 @@ public static class CodeBrixAudioOpus
     // .RegisterPacketCodecFactory de-duplicates on the instance too.
     private static readonly OpusPacketCodecFactory PacketFactory = new OpusPacketCodecFactory();
 
+    // The writer seam's factory, held the same way. AudioFileWriterRegistry keys on the EXTENSION
+    // rather than on the instance, so a fresh factory per call would replace rather than stack up -
+    // but one shared instance means every .opus written by file name is written with the same
+    // encoder settings, which is what a consumer replacing it with its own factory expects to be
+    // replacing.
+    private static readonly OpusAudioFileWriterFactory WriterFactory = new OpusAudioFileWriterFactory();
+
     private static bool registered;
 
     /// <summary>
-    /// Registers Opus with the shared audio output and the file-name reader registry.
+    /// Registers Opus with the shared audio output and with the file-name reader AND writer
+    /// registries.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -51,6 +60,15 @@ public static class CodeBrixAudioOpus
     /// that only ever plays files is unaffected by the second one; an application demultiplexing a
     /// container gets it from the call it was already making.
     /// </para>
+    /// <para>
+    /// It covers READING AND WRITING. ".opus" goes into AudioFileReaderRegistry, so a .opus file
+    /// opens by name, and an <see cref="OpusAudioFileWriterFactory" /> goes into
+    /// AudioFileWriterRegistry, so a .opus file is WRITTEN by name too - which is what makes
+    /// CodeBrix.Audio's <c>SoundFontRenderer.RenderToFile(synthesizer, sequence, "tune.opus")</c>
+    /// produce an Opus file. Anyone already making this call gets the write side from the call they
+    /// were already making. Register an <see cref="OpusAudioFileWriterFactory" /> of your own
+    /// AFTERWARDS to write .opus at settings other than the encoder defaults.
+    /// </para>
     /// </remarks>
     public static void Register()
     {
@@ -61,6 +79,7 @@ public static class CodeBrixAudioOpus
             SharedAudioOutput.RegisterCodecFactory(Factory);
             SharedAudioOutput.RegisterPacketCodecFactory(PacketFactory);
             AudioFileReaderRegistry.Register(".opus", stream => new OpusFileReader(stream));
+            AudioFileWriterRegistry.Register(WriterFactory);
 
             registered = true;
         }
@@ -79,8 +98,9 @@ public static class CodeBrixAudioOpus
     /// </para>
     /// <para>
     /// Like <see cref="Register()" /> it registers both seams - the stream one and the packet one -
-    /// on the engine you pass. It does NOT register the ".opus" file extension, which is a
-    /// process-wide registry rather than an engine's.
+    /// on the engine you pass. It does NOT register the ".opus" file extension for reading or for
+    /// writing: those two registries are process-wide rather than an engine's, so call
+    /// <see cref="Register()" /> when you want a .opus opened or written by file name.
     /// </para>
     /// </remarks>
     public static void Register(AudioEngine engine)

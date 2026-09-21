@@ -39,7 +39,13 @@ REPOSITORY LAYOUT
       OpusFileWriter.cs           public writer
       OpusFileWriterOptions.cs    public options
       OpusEncodingProfile.cs      public enum
+      OpusAudioFileWriterFactory.cs
+                                  public IAudioFileWriterFactory - the writer
+                                  seam (see THE WRITER SEAM)
       InternalsVisibleTo.cs       opens internals to the .Tests assembly
+      Internal/                   internal types that need their own file:
+                                  OpusStreamAudioFileWriter, the
+                                  IAudioFileWriter over OpusFileWriter
       Codecs/                     engine-facing: OpusSoundDecoder (derives from
                                   ManagedSoundDecoder), OpusSoundEncoder
                                   (implements ISoundEncoder), OpusCodecFactory,
@@ -134,6 +140,69 @@ through this library alone would pass even if both halves shared a bug, so the
 tests also decode what this library WROTE using ffmpeg, and compare. Opus is
 lossy, so those comparisons are tolerance-based (AudioAssertions.cs) rather than
 byte-for-byte.
+
+
+THE WRITER SEAM
+===============
+CodeBrix.Audio has a write-side mirror of its file-extension reader registry:
+IAudioFileWriter / IAudioFileWriterFactory / AudioFileWriterRegistry, with WAV
+and AIFF registered out of the box. This repository implements it for Opus in
+OpusAudioFileWriterFactory (public) over Internal/OpusStreamAudioFileWriter, and
+CodeBrixAudioOpus.Register() registers it beside the ".opus" reader. That one
+line is what makes SoundFontRenderer.RenderToFile(synthesizer, sequence,
+"tune.opus") produce an Opus file with nothing in CodeBrix.Audio naming Opus.
+
+IT IS A WRAP, NOT A SECOND ENCODER. The adapter holds an OpusFileWriter built
+from the format's rate and channel count and forwards writes to it. Nothing in
+Ogg/ or Codec/ was touched, and OpusFileWriter's own behaviour is unchanged.
+
+NO IgnoreDisposeStream IS NEEDED, unlike CodeBrix.Audio's own WAV and AIFF
+adapters. Those wrap WaveFileWriter and AiffFileWriter, which dispose the stream
+they were handed; OpusFileWriter's Stream constructor already does not own the
+stream, which is exactly what the seam requires. Do not "make it consistent" by
+adding a wrapper.
+
+RequiresSeekableStream IS FALSE, and that is a real difference rather than an
+optimisation. Ogg is written strictly forwards - OggPageWriter only ever calls
+destination.Write, and the closing page carrying the true granule position is
+the last thing written rather than a patch of an earlier one - so a .opus can be
+written to a pipe or a network stream where a .wav cannot. ForwardOnlyStream in
+the test project throws from Seek, Position and Length so that claim is proved
+rather than asserted.
+
+A PCM BIT DEPTH IS IGNORED RATHER THAN REFUSED, and this was a deliberate
+choice between two defensible behaviours. Create reads format.SampleRate and
+format.Channels and looks at nothing else: a WaveFormat's encoding means nothing
+to an Opus file, which stores a compressed payload, and IAudioFileWriter.Write
+takes float samples whatever the format says - so refusing it would buy honesty
+that the seam does not ask for at the cost of breaking an application that
+renders "to whatever extension the user picked" with one fixed WaveFormat. The
+only refusals left in Create are what the encoder genuinely cannot do: a sample
+rate that is not positive, and anything but mono or stereo. The adapter reports
+back the format it was created with, which is how the seam documents
+IAudioFileWriter.WaveFormat - its rate and channel count are exact, its bit
+depth is not what the file stores, and the XML documentation on the property
+says so in those words. DefaultFormat returns 32-bit float at the caller's own
+rate; the writer resamples to 48 kHz itself, so a 44.1 kHz render is not made to
+convert first.
+
+THE ENCODER SETTINGS BELONG TO THE FACTORY. A WaveFormat cannot express a
+bitrate or a profile, so OpusFileWriterOptions is a constructor argument and
+every file a factory writes uses it; a consumer wanting its own settings
+registers its own factory AFTER Register(), because the registry keys on the
+extension and the last registration wins. The options are validated in the
+factory's constructor, so a bad setting is reported where it was written.
+
+Register() holds ONE factory instance in a static field like the other two, but
+for a different reason: AudioFileWriterRegistry de-duplicates on the EXTENSION
+rather than on the instance, so a fresh factory per call would replace rather
+than accumulate. The shared instance is what makes "the .opus writer" one thing
+a consumer can reason about replacing.
+
+Register(AudioEngine) deliberately does NOT register the writer, exactly as it
+does not register the ".opus" reader extension: both registries are process-wide
+rather than an engine's, and that overload's whole purpose is to leave
+process-wide state alone.
 
 
 THE PACKET SEAM
@@ -366,7 +435,10 @@ declaring a dependency nobody can restore.
   cheap failure to have. OpusPacketSoundDecoder overrides ConcealLoss and
   SupportsLossConcealment on IPacketSoundDecoder, and the concealment tests use
   AudioPacket.Loss, so a CodeBrix.Audio without those members will not build
-  here at all.
+  here at all. The WRITER seam raised that floor again: IAudioFileWriter,
+  IAudioFileWriterFactory, AudioFileWriterRegistry and SoundFontRenderer's
+  RenderToFile / RenderToStream overloads all have to be in the pinned build, or
+  OpusAudioFileWriterFactory and its tests will not compile.
 
   Before publishing, prove the pin resolves from nuget.org ALONE: restore with
   nuget.org as the only source, then check that obj/project.assets.json

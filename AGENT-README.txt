@@ -19,10 +19,11 @@ One call at start-up wires it in:
 
 After that .opus plays through AudioFilePlayer, SoundEffectClip, WaveOutEvent,
 the CodeBrix.Platform AudioPlayer add-in and the CodeBrix.Platform GameEngine;
-opens by file name through AudioFileReader; and can be written by the
-CodeBrix.Audio engine's Recorder. None of those needs any other change. The
-consuming APPLICATION takes this dependency and makes the call - the add-ins
-never do.
+opens by file name through AudioFileReader; is WRITTEN by file name through
+AudioFileWriterRegistry, which is what makes SoundFontRenderer.RenderToFile(...,
+"tune.opus") produce an Opus file; and can be written by the CodeBrix.Audio
+engine's Recorder. None of those needs any other change. The consuming
+APPLICATION takes this dependency and makes the call - the add-ins never do.
 
 The same call also turns on Opus for audio that arrives as CONTAINER PACKETS
 rather than as a file - the shape a demultiplexer produces when it lifts an
@@ -115,7 +116,7 @@ notice text must travel with any redistribution.
 
 CORE API REFERENCE
 ==================
-Seven public types. Every one of them is listed here.
+Every public type in this package is listed here.
 
 CodeBrixAudioOpus  (static, CodeBrix.Audio.Opus)
 ------------------------------------------------
@@ -125,9 +126,11 @@ CodeBrixAudioOpus  (static, CodeBrix.Audio.Opus)
 
   Register() is the one call. It registers BOTH codec factories with
   SharedAudioOutput - the stream one, which opens .opus files, and the packet
-  one, which decodes the bare Opus packets a media container carries - and
-  registers ".opus" with AudioFileReaderRegistry. It is idempotent and
-  thread-safe; calling it twice does nothing.
+  one, which decodes the bare Opus packets a media container carries - registers
+  ".opus" with AudioFileReaderRegistry, and registers an
+  OpusAudioFileWriterFactory with AudioFileWriterRegistry so .opus can be
+  WRITTEN by file name as well as read by it. It is idempotent and thread-safe;
+  calling it twice does nothing.
   Register(AudioEngine) is for a consumer driving its OWN engine rather than the
   shared output - it registers both factories with that engine only, and does
   not affect SharedAudioOutput. Pair it with CodeBrix.Audio's
@@ -238,6 +241,60 @@ OpusEncodingProfile  (enum, CodeBrix.Audio.Opus)
   The two profiles tune the codec differently enough to be audible at low
   bitrates. Fixed when the encoder is constructed, so it cannot be changed on an
   open writer - construct a new writer instead.
+
+OpusAudioFileWriterFactory : IAudioFileWriterFactory  (CodeBrix.Audio.Opus)
+----------------------------------------------------------------------------
+    OpusAudioFileWriterFactory()
+    OpusAudioFileWriterFactory(OpusFileWriterOptions options)
+
+    OpusFileWriterOptions Options { get; }
+    IReadOnlyList<string> Extensions { get; }        // [".opus"]
+    bool RequiresSeekableStream { get; }             // FALSE
+    WaveFormat DefaultFormat(int sampleRate, int channels)
+    IAudioFileWriter Create(Stream stream, WaveFormat format)
+
+  What teaches CodeBrix.Audio's WRITER registry Opus, the way OpusFileReader
+  teaches its reader registry. Register() installs one, so every road that
+  writes audio by file name covers .opus afterwards - most usefully
+  SoundFontRenderer.RenderToFile(synthesizer, sequence, "tune.opus"), which
+  picks its writer from the path's extension and names no format itself.
+
+  IT NEEDS NO SEEKING. RequiresSeekableStream is false, because Ogg is written
+  strictly forwards: nothing is patched at the end, and the closing page
+  carrying the true sample count is simply the last thing written. So a .opus
+  can be written to a pipe or a network stream, where a .wav or an .aiff cannot.
+
+  ONLY THE RATE AND THE CHANNEL COUNT OF A WaveFormat ARE USED. Create reads
+  format.SampleRate and format.Channels and IGNORES the encoding and the bit
+  depth, because an Opus file stores a compressed payload and IAudioFileWriter
+  always takes float samples anyway - so new WaveFormat(44100, 16, 2) writes
+  exactly the same file that DefaultFormat does, and an application that renders
+  to whatever extension the user picked with one fixed format keeps working on
+  .opus. What is refused is what the encoder genuinely cannot do: a sample rate
+  that is not positive, and anything but mono or stereo. DefaultFormat returns
+  32-bit IEEE float at whatever rate you ask for - the encoder resamples
+  anything that is not 48 kHz itself, so a 44.1 kHz render needs no conversion
+  first. The IAudioFileWriter reports back the format it was created with, so a
+  caller that passed 16-bit PCM reads 16-bit PCM from writer.WaveFormat; its
+  rate and channel count are exact, its bit depth is not what the file stores.
+
+  THE ENCODER SETTINGS LIVE ON THE FACTORY, not on the format. A WaveFormat has
+  no way to say 160 kbps in the Voice profile, so bitrate, profile, variable
+  bitrate, complexity and tags come from the OpusFileWriterOptions the factory
+  was built with, and every file it writes uses them. To write at settings of
+  your own, register a factory that carries them AFTER calling Register():
+
+      CodeBrixAudioOpus.Register();
+      AudioFileWriterRegistry.Register(new OpusAudioFileWriterFactory(
+          new OpusFileWriterOptions { Bitrate = 160_000 }));
+
+  Out-of-range options throw ArgumentOutOfRangeException from the constructor,
+  where the mistake was made, rather than from the first file written.
+
+  The IAudioFileWriter it returns is CodeBrix.Audio's interface: Write(float[],
+  int, int), Write(ReadOnlySpan<float>), Finish() and Dispose(). It NEVER closes
+  the stream it was handed - the caller owns that throughout - and, like
+  OpusFileWriter, it only produces a complete file once it is finished.
 
 OpusCodecFactory : ICodecFactory  (CodeBrix.Audio.Opus.Codecs)
 ---------------------------------------------------------------
@@ -420,6 +477,43 @@ Write to a stream you own (the writer will NOT close it):
         writer.Write(interleavedStereo);
     }
     var opusBytes = output.ToArray();   // `output` is still open here
+
+Render music straight to .opus, by file name (the extension is the whole of the
+decision - nothing in CodeBrix.Audio names Opus):
+
+    using CodeBrix.Audio.Opus;
+    using CodeBrix.Audio.Synth;
+    using CodeBrix.Audio.Wave;
+
+    CodeBrixAudioOpus.Register();          // once, at start-up
+
+    SoundFontRenderer.RenderToFile(synthesizer, sequence, "tune.opus");
+
+    // ...or to a stream, which is never closed for you:
+    using var output = File.Create("tune.opus");
+    SoundFontRenderer.RenderToStream(synthesizer, sequence, output, ".opus");
+
+    // One fixed WaveFormat across whatever extension the user picked works too:
+    // for .wav that 16-bit format decides the stored samples, and for .opus only
+    // its rate and channel count are read - the bit depth is ignored, not refused.
+    var format = new WaveFormat(44100, 16, 2);
+    SoundFontRenderer.RenderToFile(synthesizer, sequence, userPath, format);
+
+Write a .opus through the writer registry, to a stream that cannot seek:
+
+    using CodeBrix.Audio.Opus;
+    using CodeBrix.Audio.Wave;
+
+    CodeBrixAudioOpus.Register();
+
+    // networkStream cannot seek - which is fine, because Ogg is written
+    // strictly forwards. A .wav or an .aiff would be refused here.
+    using (var writer = AudioFileWriterRegistry.Create("clip.opus", networkStream,
+                                                       sampleRate: 48000, channels: 2))
+    {
+        writer.Write(interleavedStereo, 0, interleavedStereo.Length);
+        writer.Finish();
+    }
 
 Drive your own engine rather than the shared output:
 
@@ -772,9 +866,27 @@ COMMON PITFALLS TO AVOID
 
   - Register(AudioEngine) IS NOT Register(). The overload registers both codec
     factories on the engine you pass, but does NOT register the ".opus" file
-    extension with AudioFileReaderRegistry, so AudioFileReader still will not
-    open a .opus after it. Call the parameterless Register() for the
-    shared-output path.
+    extension with AudioFileReaderRegistry or AudioFileWriterRegistry, so
+    AudioFileReader still will not open a .opus after it and RenderToFile still
+    will not write one. Both of those registries are process-wide rather than an
+    engine's. Call the parameterless Register() for the shared-output path.
+
+  - A WRITER FACTORY OF YOUR OWN GOES IN AFTER Register(), not before.
+    AudioFileWriterRegistry keys on the extension and the last registration for
+    an extension wins, so registering your own OpusAudioFileWriterFactory - the
+    way to write .opus at a bitrate or in a profile other than the defaults -
+    has to happen after the Register() call that installs the standard one, or
+    the standard one replaces yours.
+
+  - AN OPUS FILE HAS NO BIT DEPTH, AND ASKING FOR ONE IS IGNORED, NOT REFUSED.
+    Asking the writer registry for .opus at 16-bit PCM - new WaveFormat(44100,
+    16, 2), or SoundFontRenderer.RenderToFile(..., that format) - writes the
+    same file that asking for float writes: only the rate and the channel count
+    are read. That is deliberate, so a caller writing several formats with one
+    WaveFormat does not have to special-case .opus. The consequence worth
+    knowing is the other way round: the bit depth you asked for is NOT what came
+    out, and writer.WaveFormat hands it straight back to you without meaning it.
+    Set the quality with OpusFileWriterOptions instead.
 
   - IN THE GAMEENGINE, REGISTER BEFORE THE FIRST LOAD, NOT BEFORE THE FIRST
     PLAY. The engine resolves an audio extension when an asset is LOADED, so
@@ -904,6 +1016,29 @@ The test suite is the executable documentation for everything above.
                               shared output exactly once however often it is
                               called, and that Register(engine) adds both
                               factories to that engine.
+  OpusAudioFileWriterFactoryTests.cs
+                              The writer seam: what the factory declares; a
+                              round trip written through IAudioFileWriter and
+                              read back, mono and stereo; a whole file written
+                              to a stream that THROWS from Seek, Position and
+                              Length; the stream left open; finishing twice and
+                              writing afterwards; the bitrate the factory was
+                              given being the bitrate the file is written at;
+                              tags reaching the file through the factory; a
+                              16-bit PCM format writing the same audio that a
+                              float one does, and being reported back unchanged
+                              by writer.WaveFormat; and the refusals - a sample
+                              rate that is not positive, more than two channels,
+                              and a stream that cannot be written.
+  OpusWriterRegistrationTests.cs
+                              That Register() makes .opus writable by file name,
+                              that the registered factory is one instance
+                              however often it is called, and the whole point of
+                              it: MIDI and abc rendered straight to .opus
+                              through CodeBrix.Audio's SoundFontRenderer, with
+                              nothing but CodeBrix.Audio and this package, and a
+                              render asked for as 16-bit PCM still producing an
+                              Opus file.
   OpusPlaybackTests.cs        The device paths - AudioFilePlayer, SoundEffectClip,
                               seeking during playback, and a voice-note-shaped
                               file playing at the right pitch and speed. Opt-in;
@@ -913,6 +1048,10 @@ The test suite is the executable documentation for everything above.
   AudioAssertions.cs          How lossy output is compared: tolerance-based,
                               against a second implementation's decode.
   TestAssets.cs, TestAudio.cs, AudibleTestScope.cs   Fixture plumbing.
+  ForwardOnlyStream.cs        A write-only stream that cannot seek, for the
+                              claim RequiresSeekableStream makes.
+  ToneSynthesizer.cs          A sine-bank IMidiSynthesizer, so the end-to-end
+                              render tests need no SoundFont.
   PacketFixtures.cs           Takes an Ogg fixture apart into the codec-private
                               data and audio packets a container would carry.
 
@@ -948,6 +1087,17 @@ QUICK REFERENCE CARD
                                         Complexity = 10 }
             Bitrate 500..512000, Complexity 0..10, Profile Music | Voice.
 
+  BY NAME   SoundFontRenderer.RenderToFile(synth, sequence, "tune.opus")
+            SoundFontRenderer.RenderToStream(synth, sequence, stream, ".opus")
+            AudioFileWriterRegistry.Create("clip.opus", stream, 48000, 2)
+            all three arrive with Register(); the extension is the decision
+            DefaultFormat is 32-bit float at any rate; a WaveFormat you pass
+            yourself is read for its RATE AND CHANNELS ONLY - the bit depth
+            is ignored, so 16-bit PCM writes the same file
+            no seeking needed - a pipe or a network stream is fine
+            your own settings: register an OpusAudioFileWriterFactory
+            carrying OpusFileWriterOptions, AFTER Register()
+
   PLAY      AudioFilePlayer.Load(".opus")       long tracks, transport, seek
             SoundEffectClip.Load(".opus")       short, overlapping, decode-once
             new WaveOutEvent().Init(reader)     needs SharedAudioOutput
@@ -966,12 +1116,16 @@ QUICK REFERENCE CARD
             steps, at most 120 ms a call, and the CALLER LOOPS
             concealment after Reset() is silence, not an exception
 
-  SEVEN PUBLIC TYPES
+  THE PUBLIC TYPES
     CodeBrixAudioOpus      Register() / Register(AudioEngine) / IsRegistered
     OpusFileReader         WaveStream, 48 kHz 32-bit float
     OpusFileWriter         IDisposable; DISPOSE IT
     OpusFileWriterOptions  init-only; Validate()
     OpusEncodingProfile    Music | Voice
+    OpusAudioFileWriterFactory
+                           IAudioFileWriterFactory; Extensions [".opus"],
+                           RequiresSeekableStream FALSE, DefaultFormat is
+                           32-bit float at the rate you ask for
     OpusCodecFactory       ICodecFactory; FactoryId
                            "CodeBrix.Audio.Opus.ManagedOpus", Priority -10,
                            SupportedFormatIds ["ogg", "opus"]

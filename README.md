@@ -32,6 +32,7 @@ There is nothing else to add - no native-asset package, and no platform-specific
 * Decoding the bare Opus packets a media container carries, through the CodeBrix.Audio engine's packet seam: `OpusPacketCodecFactory` is what teaches that seam Opus, and one `Register()` call installs it
 * Packet-loss concealment on that packet path, so a source that drops packets is filled in rather than clicking
 * Encoding to Ogg Opus, from any input sample rate
+* Writing `.opus` by file name, wherever CodeBrix.Audio writes audio by extension - so rendered music goes straight to Opus with `SoundFontRenderer.RenderToFile(synthesizer, sequence, "tune.opus")`, and to a stream that cannot seek as happily as to a file
 * Recording straight to `.opus` through the CodeBrix.Audio engine's `Recorder`
 * Exact seeking, and durations that account for the encoder's pre-skip
 * Reading and writing Opus tags (`TITLE`, `ARTIST`, and the rest)
@@ -119,6 +120,21 @@ using (var writer = new OpusFileWriter("memo.opus", sampleRate: 44100, channels:
 // Dispose is what finishes the file - see the note below.
 ```
 
+### Render music straight to .opus, by file name
+
+```csharp
+using CodeBrix.Audio.Opus;
+using CodeBrix.Audio.Synth;
+
+CodeBrixAudioOpus.Register();   // also registers the .opus WRITER
+
+SoundFontRenderer.RenderToFile(synthesizer, sequence, "tune.opus");
+```
+
+The extension is the whole of the decision: nothing in CodeBrix.Audio names Opus, and nothing in
+your code names a codec. To write at settings of your own, register an
+`OpusAudioFileWriterFactory` carrying `OpusFileWriterOptions` after that call.
+
 ### Record straight to .opus
 
 ```csharp
@@ -174,6 +190,11 @@ bytes verbatim, so there is nothing to unwrap. `packetSource` is CodeBrix.Audio'
   a file that does carry a gain plays at the level its author asked for, and asks nothing of you.
 * **Mono and stereo only.** Channel mapping family 0, on both paths. Multichannel Opus (family 1)
   is declined with a clear message rather than mis-mapped.
+* **An Opus file has no bit depth.** Writing one by file name takes only the sample rate and the
+  channel count from the `WaveFormat` it is given; the encoding and bit depth are ignored, because
+  Opus stores a compressed payload. Asking for "16-bit PCM" writes the same file that asking for
+  float does, so an application that renders to whatever extension the user picked keeps working on
+  `.opus`. Quality is set with `OpusFileWriterOptions` instead.
 
 ## Documentation
 
