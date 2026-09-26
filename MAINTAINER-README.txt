@@ -18,8 +18,8 @@ This repository produces exactly one NuGet package:
       License:       BSD-3-Clause
       Consumer doc:  AGENT-README.txt (repo root)
 
-It adds Ogg Opus decoding and encoding to CodeBrix.Audio, which it takes a
-package dependency on. There is no second package and no native payload.
+It adds Ogg Opus decoding and encoding through CodeBrix.Audio.Core, which it
+takes a package dependency on. Applications also reference a platform package. There is no second package and no native payload.
 
 WHY THE PACKAGE IS SEPARATE, AND WHY IT STAYS SEPARATE. CodeBrix.Audio holds a
 licence bar of MIT or more permissive, and its package id -
@@ -418,17 +418,17 @@ OggOpusReader's constructor and OpusPacketSoundDecoder's.
     OpusOutputGainTests.cs re-serialises a fixture's header with a gain in it
     rather than adding a binary asset.
 
-THE PIN TO CodeBrix.Audio. The packet seam arrived in CodeBrix.Audio, so this
+THE PIN TO CodeBrix.Audio.Core. The packet seam arrived in CodeBrix.Audio, so this
 repository cannot build against a package older than the one carrying it. The
-pin in the library csproj must name a PUBLISHED version on nuget.org whenever
+CodeBrixAudioCoreVersion pin in Directory.Build.props must name a PUBLISHED version on nuget.org whenever
 this package is published - a pin at a locally packed build would ship a .nupkg
 declaring a dependency nobody can restore.
 
-  THE TWO PACKAGES MOVE TOGETHER. The library csproj pins the version of
-  CodeBrix.Audio this repository was built against, and that PackageReference
+  THE PACKAGES MOVE TOGETHER. Directory.Build.props pins the version of
+  CodeBrix.Audio.Core this repository was built against, and that property
   is the one place the number belongs - it is never written into
   AGENT-README.txt, README.md or this file. When work here needs something new
-  from CodeBrix.Audio, publish CodeBrix.Audio first and then raise this pin to
+  from CodeBrix.Audio, publish CodeBrix.Audio.Core first and then raise this pin to
   that published build: bump both together, in that order.
 
   A pin that is too old fails at COMPILE time, not at run time, which is the
@@ -442,15 +442,16 @@ declaring a dependency nobody can restore.
 
   Before publishing, prove the pin resolves from nuget.org ALONE: restore with
   nuget.org as the only source, then check that obj/project.assets.json
-  resolves CodeBrix.Audio.MitLicenseForever from it with no local feed among
+  resolves CodeBrix.Audio.Core.MitLicenseForever from it with no local feed among
   its sources, and that the packed .nuspec declares that same version as its
-  only dependency.
+  only dependency. The test application additionally references the Desktop
+  package, because Core itself contains no platform native payload.
 
 VERIFYING AGAINST AN UNPUBLISHED CodeBrix.Audio - THE PRE-PUBLISH METHOD. That
 situation recurs every time the two repositories change together, so the method
 is recorded rather than the episode. It is how the concealment work above was
 developed and gated before the CodeBrix.Audio build carrying it was published,
-and it is what to do again next time. Pack CodeBrix.Audio into a folder, raise
+and it is what to do again next time. Pack Core and Desktop from CodeBrix.Audio into a folder, raise
 the pin to that build's version, and restore from the folder WITHOUT adding a
 nuget.config to this repository:
 
@@ -476,8 +477,8 @@ PACKAGING AND PUBLISHING
   License expression     BSD-3-Clause, with
                          PackageRequireLicenseAcceptance set
   GeneratePackageOnBuild true - every build writes a fresh .nupkg
-  Dependency             CodeBrix.Audio.MitLicenseForever, pinned by a
-                         PackageReference version in the library csproj. That
+  Dependency             CodeBrix.Audio.Core.MitLicenseForever, pinned by
+                         CodeBrixAudioCoreVersion in Directory.Build.props. That
                          pin is the ONE place a version number belongs; it is
                          never written into AGENT-README.txt.
   Packed alongside the assembly:

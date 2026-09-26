@@ -42,7 +42,7 @@
     <_VersionYears>$([MSBuild]::Subtract($([System.DateTime]::UtcNow.Year), $(_VersionBaseYear)))</_VersionYears>
     <_VersionDayOfYear>$([System.DateTime]::UtcNow.DayOfYear)</_VersionDayOfYear>
     <_VersionMinuteOfDay>$([System.Convert]::ToInt32($([System.Math]::Floor($([System.DateTime]::UtcNow.TimeOfDay.TotalMinutes)))))</_VersionMinuteOfDay>
-    <BuildVersion>1.$(_VersionYears).$(_VersionDayOfYear).$(_VersionMinuteOfDay)</BuildVersion>
+    <BuildVersion Condition="'$(BuildVersion)' == ''">1.$(_VersionYears).$(_VersionDayOfYear).$(_VersionMinuteOfDay)</BuildVersion>
     <Version>$(BuildVersion)</Version>
     <AssemblyVersion>$(BuildVersion)</AssemblyVersion>
     <FileVersion>$(BuildVersion)</FileVersion>
@@ -68,7 +68,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CodeBrix.Audio.MitLicenseForever" Version="1.0.264.1197" />
+    <PackageReference Include="CodeBrix.Audio.Core.MitLicenseForever" Version="$(CodeBrixAudioCoreVersion)" />
   </ItemGroup>
 
   <ItemGroup>

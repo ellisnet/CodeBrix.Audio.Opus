@@ -59,7 +59,7 @@ Note that the PACKAGE id carries the ".BsdLicenseForever" suffix, but the
 NAMESPACE is simply "CodeBrix.Audio.Opus" (no suffix).
 
   License:        BSD-3-Clause (licence acceptance is required)
-  Depends on:     CodeBrix.Audio.MitLicenseForever
+  Depends on:     CodeBrix.Audio.Core.MitLicenseForever
   Target:         .NET 10 or later
   Native libs:    NONE. Nothing is P/Invoked and no binaries ship, so the
                   package places no restriction on the runtime identifiers your
@@ -68,6 +68,12 @@ NAMESPACE is simply "CodeBrix.Audio.Opus" (no suffix).
                   and run anywhere .NET runs; only PLAYBACK is limited, and that
                   limit belongs to CodeBrix.Audio's bundled engine and its native
                   backend, not to this package.
+
+For playback the APPLICATION also references CodeBrix.Audio.MitLicenseForever
+on Windows/Linux/macOS, or CodeBrix.Audio.Android.ApacheLicenseForever on Android.
+Android applications call CodeBrixAndroidAudio.Initialize(context) before playback,
+alongside CodeBrixAudioOpus.Register(). No Android variation of this Opus package
+is needed. Managed Opus decoding/encoding alone requires no platform package.
 
 See also: the CodeBrix.Audio package's own guide, at
 https://github.com/ellisnet/CodeBrix.Audio/blob/main/AGENT-README.txt - it
@@ -744,11 +750,13 @@ OpusDemo.csproj:
       </PropertyGroup>
       <ItemGroup>
         <PackageReference Include="CodeBrix.Audio.Opus.BsdLicenseForever" />
+        <PackageReference Include="CodeBrix.Audio.MitLicenseForever" />
       </ItemGroup>
     </Project>
 
-(CodeBrix.Audio.MitLicenseForever arrives transitively; reference it explicitly
-only if you want to pin it. Version attributes are omitted here on purpose -
+(This desktop example explicitly selects CodeBrix.Audio.MitLicenseForever.
+Android applications select CodeBrix.Audio.Android.ApacheLicenseForever instead.
+Version attributes are omitted here on purpose -
 add the current version, or use central package management.)
 
 Program.cs:

@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup>
+    <CodeBrixAudioCoreVersion Condition="'$(CodeBrixAudioCoreVersion)' == ''">1.0.269.1101</CodeBrixAudioCoreVersion>
+  </PropertyGroup>
+</Project>

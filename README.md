@@ -22,9 +22,9 @@ XML documentation (IntelliSense) ships alongside the assembly.
 
 The package pulls in the following automatically; no version pinning is needed in the consuming project:
 
-* `CodeBrix.Audio.MitLicenseForever` - the audio engine this package adds Opus to. Note that this package is licensed under the MIT License, while CodeBrix.Audio.Opus is BSD 3-Clause.
+* `CodeBrix.Audio.Core.MitLicenseForever` - the shared audio library this package adds Opus to. Core is MIT; CodeBrix.Audio.Opus is BSD 3-Clause.
 
-There is nothing else to add - no native-asset package, and no platform-specific payload.
+For playback, the application also references `CodeBrix.Audio.MitLicenseForever` on Windows/Linux/macOS, or `CodeBrix.Audio.Android.ApacheLicenseForever` on Android. Android applications call `CodeBrixAndroidAudio.Initialize(context)` before playback, alongside the existing `CodeBrixAudioOpus.Register()` call. This same Opus package works with either backend; managed Opus decoding/encoding alone requires no platform package.
 
 ## CodeBrix.Audio.Opus supports:
 
