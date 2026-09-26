@@ -420,16 +420,19 @@ OggOpusReader's constructor and OpusPacketSoundDecoder's.
 
 THE PIN TO CodeBrix.Audio.Core. The packet seam arrived in CodeBrix.Audio, so this
 repository cannot build against a package older than the one carrying it. The
-CodeBrixAudioCoreVersion pin in Directory.Build.props must name a PUBLISHED version on nuget.org whenever
-this package is published - a pin at a locally packed build would ship a .nupkg
-declaring a dependency nobody can restore.
+PackageReference version in the library csproj must name a PUBLISHED version on
+nuget.org whenever this package is published - a pin at a locally packed build
+would ship a .nupkg declaring a dependency nobody can restore.
 
-  THE PACKAGES MOVE TOGETHER. Directory.Build.props pins the version of
-  CodeBrix.Audio.Core this repository was built against, and that property
-  is the one place the number belongs - it is never written into
-  AGENT-README.txt, README.md or this file. When work here needs something new
-  from CodeBrix.Audio, publish CodeBrix.Audio.Core first and then raise this pin to
-  that published build: bump both together, in that order.
+  THE PACKAGES MOVE TOGETHER. The library csproj pins the version of
+  CodeBrix.Audio.Core this repository was built against, and that
+  PackageReference is the one place the number belongs - it is never written
+  into AGENT-README.txt, README.md or this file. The test csproj carries the
+  SAME number on its CodeBrix.Audio.MitLicenseForever reference (the desktop
+  package, which depends on Core and adds the native backend): raise the two
+  together. When work here needs something new from CodeBrix.Audio, publish
+  CodeBrix.Audio.Core first and then raise the pin to that published build:
+  bump both together, in that order.
 
   A pin that is too old fails at COMPILE time, not at run time, which is the
   cheap failure to have. OpusPacketSoundDecoder overrides ConcealLoss and
@@ -477,8 +480,8 @@ PACKAGING AND PUBLISHING
   License expression     BSD-3-Clause, with
                          PackageRequireLicenseAcceptance set
   GeneratePackageOnBuild true - every build writes a fresh .nupkg
-  Dependency             CodeBrix.Audio.Core.MitLicenseForever, pinned by
-                         CodeBrixAudioCoreVersion in Directory.Build.props. That
+  Dependency             CodeBrix.Audio.Core.MitLicenseForever, pinned by a
+                         PackageReference version in the library csproj. That
                          pin is the ONE place a version number belongs; it is
                          never written into AGENT-README.txt.
   Packed alongside the assembly:
