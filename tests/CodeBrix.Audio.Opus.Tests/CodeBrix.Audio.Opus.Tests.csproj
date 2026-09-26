@@ -16,7 +16,7 @@
 
   <ItemGroup>
     <!-- Tests are a desktop consumer and select their device backend explicitly. -->
-    <PackageReference Include="CodeBrix.Audio.MitLicenseForever" Version="$(CodeBrixAudioCoreVersion)" />
+    <PackageReference Include="CodeBrix.Audio.MitLicenseForever" Version="1.0.269.1270" />
     <ProjectReference Include="..\..\src\CodeBrix.Audio.Opus\CodeBrix.Audio.Opus.csproj" />
   </ItemGroup>
 
