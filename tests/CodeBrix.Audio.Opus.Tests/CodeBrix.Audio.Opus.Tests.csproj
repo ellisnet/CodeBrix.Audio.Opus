@@ -6,17 +6,17 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="xunit.v3" Version="4.0.1" />
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
     <PackageReference Include="SilverAssertions.ApacheLicenseForever" Version="1.0.248.1071" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- Tests are a desktop consumer and select their device backend explicitly. -->
-    <PackageReference Include="CodeBrix.Audio.MitLicenseForever" Version="1.0.271.1165" />
+    <PackageReference Include="CodeBrix.Audio.MitLicenseForever" Version="1.0.283.1382" />
     <ProjectReference Include="..\..\src\CodeBrix.Audio.Opus\CodeBrix.Audio.Opus.csproj" />
   </ItemGroup>
 
