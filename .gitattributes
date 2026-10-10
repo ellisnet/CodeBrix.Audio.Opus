@@ -1,0 +1,35 @@
+# Line endings: LF, everywhere, on every platform.
+#
+# This repository is developed on Linux and Windows. Without this file a Windows
+# checkout (core.autocrlf=true) rewrites every text file to CRLF, and the first
+# solution open / `dotnet test` there misbehaves: fixtures compared byte for
+# byte, embedded resources, shell scripts and vendored upstream sources all
+# change under it. The committed blobs are LF; these rules only stop a checkout
+# from changing them.
+* text=auto eol=lf
+
+# Never touched. A native library, an audio fixture or an image with newline
+# translation applied to it is silently corrupt, so these are declared rather
+# than left to git's heuristic.
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.so    binary
+*.dylib binary
+*.dll   binary
+*.pdb   binary
+*.a     binary
+*.lib   binary
+*.nupkg binary
+*.xz    binary
+*.gz    binary
+*.zip   binary
+*.wav   binary
+*.mp3   binary
+*.flac  binary
+*.ogg   binary
+*.opus  binary
+*.mid   binary
+*.sf2   binary
+*.ttf   binary
+*.otf   binary

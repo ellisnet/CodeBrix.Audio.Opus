@@ -100,6 +100,7 @@ internal class SpeexResampler : IResampler
     private float[] sinc_table = null;
     private int sinc_table_length = 0;
     private resampler_basic_func resampler_ptr = null;
+    private readonly bool allowSimd = true;
 
     int in_stride = 0;
     int out_stride = 0;
@@ -455,11 +456,11 @@ internal class SpeexResampler : IResampler
                 }
             }
 
-#if DEBUG
-            if (Vector.IsHardwareAccelerated && Random.Shared.NextDouble() < 0.5)
-#else
-            if (Vector.IsHardwareAccelerated)
-#endif
+            // CodeBrix: the upstream port chose the SIMD or scalar kernel AT RANDOM in Debug builds (a coin flip
+            // behind #if DEBUG) so that both paths got exercised by whatever ran. That made Debug output
+            // non-deterministic. The choice is now explicit: allowSimd (an internal constructor option the
+            // tests use to exercise the scalar kernel on hardware that would otherwise never run it).
+            if (this.allowSimd && Vector.IsHardwareAccelerated)
             {
                 this.resampler_ptr = resampler_basic_direct_single_SIMD;
             }
@@ -650,8 +651,26 @@ internal class SpeexResampler : IResampler
     /// <param name="quality">Resampling quality, from 0 to 10</param>
     /// <returns>A newly created resampler</returns>
     public SpeexResampler(int nb_channels, int ratio_num, int ratio_den, int in_rate, int out_rate, int quality)
+        : this(nb_channels, ratio_num, ratio_den, in_rate, out_rate, quality, true)
+    {
+    }
+
+    /// <summary>
+    /// Create a new resampler and choose whether the vectorised (SIMD) direct kernel may be used. The public
+    /// constructors always allow it; this overload exists so a test can force the scalar kernel on hardware
+    /// where <see cref="Vector.IsHardwareAccelerated" /> is true and compare the two.
+    /// </summary>
+    /// <param name="nb_channels">The number of channels to be processed</param>
+    /// <param name="ratio_num">Numerator of sampling rate ratio</param>
+    /// <param name="ratio_den">Denominator of sampling rate ratio</param>
+    /// <param name="in_rate">Input sample rate rounded to the nearest integer (in hz)</param>
+    /// <param name="out_rate">Output sample rate rounded to the nearest integer (in hz)</param>
+    /// <param name="quality">Resampling quality, from 0 to 10</param>
+    /// <param name="allowSimd">False forces the scalar direct kernel even when SIMD is available.</param>
+    internal SpeexResampler(int nb_channels, int ratio_num, int ratio_den, int in_rate, int out_rate, int quality, bool allowSimd)
     {
         int i;
+        this.allowSimd = allowSimd;
         if (quality > 10 || quality < 0)
         {
             throw new ArgumentException("Quality must be between 0 and 10");
