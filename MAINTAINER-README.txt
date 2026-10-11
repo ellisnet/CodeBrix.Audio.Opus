@@ -39,13 +39,20 @@ REPOSITORY LAYOUT
       OpusFileWriter.cs           public writer
       OpusFileWriterOptions.cs    public options
       OpusEncodingProfile.cs      public enum
+      OpusPacketEncoder.cs        public packet-level encoder (see THE ONE
+                                  ENCODING CORE)
+      OpusPacket.cs               public readonly struct, one encoded packet
+      OpusEncoderOptions.cs       public options for OpusPacketEncoder
       OpusAudioFileWriterFactory.cs
                                   public IAudioFileWriterFactory - the writer
                                   seam (see THE WRITER SEAM)
       InternalsVisibleTo.cs       opens internals to the .Tests assembly
       Internal/                   internal types that need their own file:
                                   OpusStreamAudioFileWriter, the
-                                  IAudioFileWriter over OpusFileWriter
+                                  IAudioFileWriter over OpusFileWriter;
+                                  OpusEncodingCore, the one encoding core;
+                                  OpusEncoderSettingsMapper, both public option
+                                  classes -> OggOpusWriterSettings
       Codecs/                     engine-facing: OpusSoundDecoder (derives from
                                   ManagedSoundDecoder), OpusSoundEncoder
                                   (implements ISoundEncoder), OpusCodecFactory,
@@ -140,6 +147,61 @@ through this library alone would pass even if both halves shared a bug, so the
 tests also decode what this library WROTE using ffmpeg, and compare. Opus is
 lossy, so those comparisons are tolerance-based (AudioAssertions.cs) rather than
 byte-for-byte.
+
+The ONE place encoder output IS compared byte for byte is
+OggOpusWriterByteStabilityTests.cs, and the serial-number caveat above is why it
+constructs the internal OggOpusWriter directly with a FIXED serial number rather
+than going through OpusFileWriter (which picks a random one). See THE ONE
+ENCODING CORE for what it proves.
+
+
+THE ONE ENCODING CORE
+=====================
+There is exactly one place that encodes: Internal/OpusEncodingCore. It owns
+input resampling, 20 ms frame accumulation, the encoder's lookahead (= the
+pre-skip), the OpusHead bytes, and the end-of-stream rule (pad the last partial
+frame with silence, then add silent frames until the packets hold pre-skip +
+every input sample at 48 kHz). It queues packets stamped with their first
+sample on the stream timeline and knows nothing about Ogg.
+
+Every encoding face sits on it:
+
+  OggOpusWriter       a THIN Ogg layer: header pages, each packet with the
+                      granule at its end, final page granule =
+                      core.TargetSampleCount. Under it: OpusFileWriter, the
+                      writer seam, and OpusSoundEncoder (the engine's Recorder).
+  OpusPacketEncoder   hands the queue to the caller as OpusPacket values, the
+                      OpusHead as IdentificationHeader, and
+                      TrailingTrimSamples = samples emitted - target.
+
+Do not give either face encoding logic of its own. The guarantee consumers rely
+on - the packet encoder's packets ARE the .opus file's packets, byte for byte,
+and its trailing trim IS what the file's final granule implies - holds only
+because there is one core. OpusPacketEncoderTests pins that guarantee against
+OpusFileWriter output.
+
+The two public option classes are deliberately separate types
+(OpusFileWriterOptions has Tags; OpusEncoderOptions has ResamplerQuality and no
+tags). Nothing was moved into a shared base class, so the published
+OpusFileWriterOptions surface is binary-compatible. One internal helper,
+OpusEncoderSettingsMapper, maps either onto OggOpusWriterSettings, so a given
+tuning means the same thing on both faces. The engine path (OpusCodecFactory ->
+OpusSoundEncoder) still passes a default OggOpusWriterSettings, whose signal
+type is AUTO rather than the Music profile's MUSIC; that difference predates
+the core and is preserved.
+
+THE BYTE-STABILITY PROOF. When the core was extracted, OggOpusWriter's output
+had to stay byte-identical. OggOpusWriterByteStabilityTests keeps the pre-core
+writer verbatim as a private nested LegacyOggOpusWriter and, for every case
+(mono / stereo 48 kHz, stereo 44.1 kHz, the Voice profile at 16 kHz, 777-sample
+chunking at both rates, an odd length, no input at all, the engine's default
+settings, and two 12-second streams long enough to span several Ogg pages),
+writes the same tone through both with the same serial number and asserts the
+bytes are equal. The reference is regenerated on every run rather than stored,
+so the proof holds on any machine whatever its floating-point behaviour. The
+long cases matter: a short stream fits on its final page, whose granule is
+overwritten, so only a multi-page stream checks per-packet granule positions.
+Do not "tidy" LegacyOggOpusWriter - its value is that it is the old code.
 
 
 THE WRITER SEAM

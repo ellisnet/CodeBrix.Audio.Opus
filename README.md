@@ -32,6 +32,7 @@ For playback, the application also references `CodeBrix.Audio.MitLicenseForever`
 * Decoding the bare Opus packets a media container carries, through the CodeBrix.Audio engine's packet seam: `OpusPacketCodecFactory` is what teaches that seam Opus, and one `Register()` call installs it
 * Packet-loss concealment on that packet path, so a source that drops packets is filled in rather than clicking
 * Encoding to Ogg Opus, from any input sample rate
+* Encoding to bare Opus packets plus the identification header, for a container of your own (Matroska / WebM, MP4, a network stream) - the same packets an `.opus` file would hold, with the pre-skip and end-of-stream padding stated for the container
 * Writing `.opus` by file name, wherever CodeBrix.Audio writes audio by extension - so rendered music goes straight to Opus with `SoundFontRenderer.RenderToFile(synthesizer, sequence, "tune.opus")`, and to a stream that cannot seek as happily as to a file
 * Recording straight to `.opus` through the CodeBrix.Audio engine's `Recorder`
 * Exact seeking, and durations that account for the encoder's pre-skip
@@ -172,6 +173,35 @@ The codec id is `"opus"` - the codec, not the container - and `codecPrivate` is 
 identification header exactly as the container stored it; a Matroska or WebM track holds those
 bytes verbatim, so there is nothing to unwrap. `packetSource` is CodeBrix.Audio's
 `IAudioPacketSource`, which your demultiplexer implements.
+
+### Encode Opus packets for a container
+
+```csharp
+using CodeBrix.Audio.Opus;
+
+using var encoder = new OpusPacketEncoder(channels: 2, inputSampleRate: 48000);
+
+byte[] codecPrivate = encoder.IdentificationHeader.ToArray();   // the OpusHead
+int codecDelay = encoder.PreSkip;                               // 48 kHz samples
+
+encoder.Encode(samples);                                        // interleaved, [-1, 1]
+while (encoder.TryReadPacket(out OpusPacket packet))
+{
+    muxer.WriteAudio(packet.Data, packet.Timestamp, packet.Duration);
+}
+
+encoder.Finish();                                               // pads the tail
+while (encoder.TryReadPacket(out OpusPacket packet))
+{
+    muxer.WriteAudio(packet.Data, packet.Timestamp, packet.Duration);
+}
+int discardPadding = encoder.TrailingTrimSamples;               // 48 kHz samples, last block
+```
+
+Packets are 20 ms each and stamped on the stream's own 48 kHz timeline: the first starts at zero
+with the pre-skip still inside it, which the container states separately (Matroska's
+`CodecDelay`), and `TrailingTrimSamples` is the padding to drop at the very end (Matroska's
+`DiscardPadding`). Finish before you dispose - disposing discards any packets not yet taken.
 
 ## Sharp edges
 

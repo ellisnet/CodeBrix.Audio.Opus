@@ -8,8 +8,9 @@ namespace CodeBrix.Audio.Opus.Ogg;
 /// Encoder settings in the terms the vendored codec understands.
 /// </summary>
 /// <remarks>
-/// This is the internal counterpart of the public <see cref="OpusFileWriterOptions" />. Keeping
-/// the two separate is deliberate: the public options name things the way a CodeBrix consumer
+/// This is the internal counterpart of the public <see cref="OpusFileWriterOptions" /> and
+/// <see cref="OpusEncoderOptions" />, both of which are mapped onto it by one helper. Keeping
+/// them separate is deliberate: the public options name things the way a CodeBrix consumer
 /// thinks about them, and no vendored type appears in the public API surface.
 /// </remarks>
 internal sealed class OggOpusWriterSettings

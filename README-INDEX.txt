@@ -12,8 +12,8 @@ AGENT-README FILES (consumer documentation, one per NuGet package)
   AGENT-README.txt
       CodeBrix.Audio.Opus.BsdLicenseForever - fully managed Opus decoding and
       encoding for CodeBrix.Audio - both Ogg Opus (.opus) files and the bare
-      container Opus packets a demultiplexer produces - with no native binaries
-      on any platform.
+      container Opus packets a demultiplexer produces or a muxer stores - with
+      no native binaries on any platform.
 
 MAINTAINER AND EXTRAS
 ---------------------

@@ -31,6 +31,11 @@ audio track out of a media container. That is CodeBrix.Audio's packet seam, and
 this package is what teaches it Opus; see PLAYING OPUS THAT ARRIVES AS PACKETS
 below. An application that only ever opens .opus files is unaffected by it.
 
+Encoding has a packet face too. OpusPacketEncoder turns samples into bare Opus
+packets plus the 19-byte OpusHead, for a muxer that stores Opus in a container
+of its own (Matroska / WebM, MP4, a network stream) - no Ogg file in between.
+See ENCODING OPUS AS PACKETS FOR A CONTAINER below. It needs no Register() call.
+
 In the GameEngine, .opus is not a second-class add-on. It reaches every path a
 built-in format reaches: AudioResourceManager loads, SoundChannel clips,
 CachedSound decode-once preload, the SFX voice pool, music tracks, and
@@ -247,6 +252,84 @@ OpusEncodingProfile  (enum, CodeBrix.Audio.Opus)
   The two profiles tune the codec differently enough to be audible at low
   bitrates. Fixed when the encoder is constructed, so it cannot be changed on an
   open writer - construct a new writer instead.
+
+OpusPacketEncoder : IDisposable  (sealed, CodeBrix.Audio.Opus)
+---------------------------------------------------------------
+    OpusPacketEncoder(int channels, int inputSampleRate,
+                      OpusEncoderOptions options = null)
+
+    int Channels { get; }
+    int InputSampleRate { get; }
+    int SampleRate { get; }                   // always 48000 (the packets' rate)
+    int PreSkip { get; }                      // 48 kHz samples, fixed at construction
+    ReadOnlyMemory<byte> IdentificationHeader { get; }   // the 19-byte OpusHead
+    void Encode(ReadOnlySpan<float> interleaved)
+    void Encode(float[] samples, int offset, int count)
+    bool TryReadPacket(out OpusPacket packet)
+    int PendingPackets { get; }
+    void Finish()
+    int TrailingTrimSamples { get; }          // valid after Finish()
+    long FramesWritten { get; }               // input frames, at InputSampleRate
+    long SamplesEncoded { get; }              // 48 kHz samples emitted in packets
+    TimeSpan Duration { get; }                // FramesWritten / InputSampleRate
+    bool IsFinished { get; }
+    bool IsDisposed { get; }
+    void Dispose()
+
+  The PACKET-level encoder: interleaved floats in, bare Opus packets out, plus
+  the identification header a container stores as the track's codec-private
+  data. Nothing is written anywhere. channels must be 1 or 2 (mapping family 0)
+  and inputSampleRate must be positive, else ArgumentOutOfRangeException; any
+  rate is accepted and anything but 48000 is resampled on the way in, exactly as
+  OpusFileWriter does. Encode takes a WHOLE number of frames - a length that is
+  not a multiple of Channels throws ArgumentException.
+
+  Encode queues every 20 ms packet that completes; take them, oldest first,
+  with TryReadPacket. Finish pads and encodes the last partial frame, adds
+  silent packets until the stream holds PreSkip plus every input sample (at
+  48 kHz), and fixes TrailingTrimSamples; it is idempotent, and packets still
+  queued stay readable. Encode after Finish throws InvalidOperationException;
+  TrailingTrimSamples before Finish throws InvalidOperationException. Dispose
+  DISCARDS untaken packets and does NOT finish; afterwards Encode, Finish,
+  TryReadPacket and PendingPackets throw ObjectDisposedException, while
+  IdentificationHeader, PreSkip and the counters stay readable.
+
+  For the same input and tuning, the packets are byte for byte the audio packets
+  of the .opus file OpusFileWriter writes, and IdentificationHeader is byte for
+  byte that file's first packet - both faces run on one encoding core.
+
+  An instance is not thread-safe; separate instances are independent.
+
+OpusPacket  (readonly struct, CodeBrix.Audio.Opus)
+---------------------------------------------------
+    OpusPacket(ReadOnlyMemory<byte> data, long firstSample, int sampleCount)
+
+    ReadOnlyMemory<byte> Data { get; }        // exactly one Opus packet
+    long FirstSample { get; }                 // stream timeline, 48 kHz samples
+    int SampleCount { get; }                  // 960 (20 ms) for every packet made
+    TimeSpan Timestamp { get; }               // FirstSample / 48000
+    TimeSpan Duration { get; }                // SampleCount / 48000
+
+  FirstSample is on the STREAM timeline: packet 0 starts at 0 with the pre-skip
+  still inside it (RFC 7845 counting; what a Matroska track with a CodecDelay
+  expects). Sample counts are per channel.
+
+OpusEncoderOptions  (sealed, CodeBrix.Audio.Opus)
+--------------------------------------------------
+    int Bitrate { get; init; }                       // default 96_000 bps
+    OpusEncodingProfile Profile { get; init; }       // default Music
+    bool UseVariableBitrate { get; init; }           // default true
+    int Complexity { get; init; }                    // default 10, range 0-10
+    int ResamplerQuality { get; init; }              // default 5, range 0-10
+    void Validate()
+
+  The packet encoder's options. The tuning values mean exactly what they mean on
+  OpusFileWriterOptions and the same values give the same packets. Bitrate is
+  for the whole stream (all channels), 500..512000. ResamplerQuality is the
+  input resampler's quality, used only when the input rate is not 48000 (5 is
+  what OpusFileWriter always uses). There are no Tags: tags belong to a
+  container. Validate() throws ArgumentOutOfRangeException for a value out of
+  range; the encoder's constructor calls it for you.
 
 OpusAudioFileWriterFactory : IAudioFileWriterFactory  (CodeBrix.Audio.Opus)
 ----------------------------------------------------------------------------
@@ -736,6 +819,75 @@ started the output at 44.1 kHz, and every Opus track then plays through the
 interpolator.
 
 
+ENCODING OPUS AS PACKETS FOR A CONTAINER
+========================================
+OpusFileWriter writes an Ogg Opus FILE. A muxer that stores Opus in a container
+of its own - Matroska / WebM (A_OPUS), MP4, a network stream - wants the bare
+packets and the identification header instead. OpusPacketEncoder hands over
+exactly those, with no Ogg in between:
+
+    using CodeBrix.Audio.Opus;
+
+    using var encoder = new OpusPacketEncoder(channels: 2, inputSampleRate: 48000,
+        new OpusEncoderOptions { Bitrate = 128_000 });
+
+    byte[] codecPrivate = encoder.IdentificationHeader.ToArray();  // OpusHead
+    long codecDelay = encoder.PreSkip;                             // 48 kHz samples
+
+    foreach (float[] block in mySource)            // interleaved, [-1, 1]
+    {
+        encoder.Encode(block);
+        while (encoder.TryReadPacket(out OpusPacket packet))
+        {
+            muxer.WriteAudio(packet.Data, packet.Timestamp, packet.Duration);
+        }
+    }
+
+    encoder.Finish();                              // pads the tail
+    while (encoder.TryReadPacket(out OpusPacket packet))
+    {
+        muxer.WriteAudio(packet.Data, packet.Timestamp, packet.Duration);
+    }
+    muxer.SetDiscardPadding(encoder.TrailingTrimSamples);  // on the LAST block
+
+What a container needs, and where it comes from:
+
+  CODEC-PRIVATE DATA = IdentificationHeader. The 19-byte OpusHead (RFC 7845
+    section 5.1): channel mapping family 0, the input rate recorded
+    (informational), output gain 0, and the pre-skip. A Matroska A_OPUS track
+    stores it verbatim in CodecPrivate. It is valid from construction - nothing
+    in it changes as audio is encoded - so a muxer can write its track header
+    before the first packet.
+
+  THE TIMELINE. Every packet carries FirstSample on the STREAM's own 48 kHz
+    timeline: the first packet starts at 0, and the pre-skip is still inside
+    it. Do not shift the packets to hide the pre-skip; state it.
+
+  PRE-SKIP = CodecDelay. PreSkip is the encoder's lookahead, in 48 kHz samples,
+    fixed at construction. Matroska states it as the track's CodecDelay (in
+    nanoseconds: PreSkip * 1_000_000_000 / 48000); the OpusHead carries it too.
+    A decoder discards that many samples from the start.
+
+  TRAILING TRIM = DiscardPadding. After Finish, TrailingTrimSamples is how many
+    48 kHz samples at the END are padding the decoder must discard (always
+    under 960). Matroska states it as DiscardPadding on the last block
+    (nanoseconds again); an Ogg writer states it through the final granule
+    position. Packets emitted - PreSkip - TrailingTrimSamples = the audible
+    48 kHz length.
+
+  EVERY PACKET IS 20 ms. SampleCount is 960 for every packet this encoder
+    makes, so Timestamp advances by exactly 20 ms per packet.
+
+  DRAIN AFTER EACH Encode, FINISH, THEN DRAIN AGAIN. Packets accumulate in a
+    queue until taken; Finish adds the last few. Dispose DISCARDS whatever is
+    still queued and does not finish the stream - so Finish and drain first.
+
+The packets are byte for byte the ones OpusFileWriter would put in an .opus file
+for the same input and tuning, so anything that decodes this package's .opus
+files decodes these packets, and the packet decoder in PLAYING OPUS THAT
+ARRIVES AS PACKETS takes IdentificationHeader as its codec-private data.
+
+
 MINIMUM VIABLE PROJECT
 ======================
 Console application that plays a .opus file to the end. Two files.
@@ -914,6 +1066,22 @@ COMMON PITFALLS TO AVOID
   - Position and Length are BYTES, not samples and not seconds. Divide by
     Channels * sizeof(float) for frames, or use TotalTime.
 
+  - AN UNDRAINED PACKET QUEUE GROWS. OpusPacketEncoder keeps every packet it
+    makes until TryReadPacket takes it, fifty a second. Drain after each
+    Encode call; a muxer that only reads at the end holds the whole stream in
+    memory.
+
+  - FORGETTING Finish ON THE PACKET ENCODER LOSES THE TAIL. Up to 20 ms of
+    audio sits in a partial frame until Finish pads and encodes it, and
+    TrailingTrimSamples does not exist until then (it throws). Dispose does
+    NOT finish - it discards. Finish, drain, then dispose.
+
+  - FramesWritten IS NOT THE 48 kHz COUNT. On OpusPacketEncoder, FramesWritten
+    counts INPUT frames at InputSampleRate (44100 a second for 44.1 kHz input).
+    Packet timestamps, PreSkip, SamplesEncoded and TrailingTrimSamples are all
+    48 kHz samples. Do not mix the two - derive container timing from the
+    packets and SamplesEncoded, never from FramesWritten.
+
 
 WHAT THIS PACKAGE DOES NOT DO
 =============================
@@ -925,8 +1093,11 @@ WHAT THIS PACKAGE DOES NOT DO
   - It does not READ any container but Ogg. It decodes the Opus packets a
     container carried, once something else has lifted them out and handed over
     the identification header - it does not parse Matroska, WebM, RTP or
-    anything else, and it has no demultiplexer of its own. Encoding is Ogg
-    Opus files only.
+    anything else, and it has no demultiplexer of its own.
+
+  - It does not WRITE any container but Ogg. OpusFileWriter writes Ogg Opus;
+    OpusPacketEncoder hands over bare packets and the OpusHead, and a muxer of
+    your own (Matroska, WebM, MP4, ...) does the framing.
 
   - It does not P/Invoke libopus, ship native binaries, or provide a native
     path. If you need libopus itself, this is not that package.
@@ -1062,6 +1233,21 @@ The test suite is the executable documentation for everything above.
                               render tests need no SoundFont.
   PacketFixtures.cs           Takes an Ogg fixture apart into the codec-private
                               data and audio packets a container would carry.
+  OpusPacketEncoderTests.cs   The packet encoder: 960-sample packets contiguous
+                              from 0; the header equal to the OpusHead the file
+                              writer writes; the packets byte for byte the
+                              packets of the file the file writer writes (mono,
+                              stereo, 44.1 kHz, odd chunking, the same tuning);
+                              the trailing trim equal to what the file's final
+                              granule implies; packets decoded through the
+                              packet decoder, less pre-skip and trim, giving the
+                              source tone back (also resampled); the Finish /
+                              Dispose / queue rules and the refusals; and ffmpeg
+                              decoding an Ogg file rebuilt from the packets.
+  OggOpusWriterByteStabilityTests.cs
+                              That the Ogg writer's bytes are unchanged by the
+                              shared encoding core, against the pre-core writer
+                              kept in the test as the reference.
 
 The fixtures those tests read are described at
 https://github.com/ellisnet/CodeBrix.Audio.Opus/blob/main/tests/Assets/audio/AUDIO-FIXTURES.txt
@@ -1112,6 +1298,17 @@ QUICK REFERENCE CARD
                                                 .Configure(48000) first
   RECORD    new Recorder(device, stream, "opus")
 
+  PACKETS   new OpusPacketEncoder(ch, rate, options)     ENCODE for a container
+  OUT       .IdentificationHeader  -> codec-private (OpusHead, 19 bytes)
+            .Encode(span) then while (.TryReadPacket(out p)) mux(p)
+            p.Data / p.FirstSample / p.Timestamp  (stream timeline, 48 kHz,
+            packet 0 at 0 WITH the pre-skip inside) / p.SampleCount = 960
+            .Finish() then drain again; Dispose DISCARDS, does not finish
+            .PreSkip = CodecDelay   .TrailingTrimSamples = DiscardPadding
+            .FramesWritten is INPUT frames; everything else is 48 kHz
+            new OpusEncoderOptions { Bitrate, Profile, UseVariableBitrate,
+                                     Complexity, ResamplerQuality }
+
   PACKETS   player.Open("opus", codecPrivate, source)   PacketAudioPlayer
             SharedAudioOutput.CreatePacketDecoder("opus", codecPrivate)
             codecPrivate = the OpusHead bytes (a container's CodecPrivate)
@@ -1130,6 +1327,9 @@ QUICK REFERENCE CARD
     OpusFileWriter         IDisposable; DISPOSE IT
     OpusFileWriterOptions  init-only; Validate()
     OpusEncodingProfile    Music | Voice
+    OpusPacketEncoder      IDisposable; packets + OpusHead for a container
+    OpusPacket             readonly struct; Data, FirstSample, SampleCount
+    OpusEncoderOptions     init-only; Validate(); ResamplerQuality 0..10
     OpusAudioFileWriterFactory
                            IAudioFileWriterFactory; Extensions [".opus"],
                            RequiresSeekableStream FALSE, DefaultFormat is

@@ -1,7 +1,6 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
-using CodeBrix.Audio.Opus.Codec.Enums;
+using CodeBrix.Audio.Opus.Internal;
 using CodeBrix.Audio.Opus.Ogg;
 
 namespace CodeBrix.Audio.Opus;
@@ -71,7 +70,7 @@ public sealed class OpusFileWriter : IDisposable
         try
         {
             writer = new OggOpusWriter(outputStream, channels, sampleRate,
-                BuildSettings(options), NewSerialNumber(), leaveOpen: true);
+                OpusEncoderSettingsMapper.ToSettings(options), NewSerialNumber(), leaveOpen: true);
         }
         catch
         {
@@ -140,29 +139,6 @@ public sealed class OpusFileWriter : IDisposable
         }
 
         return File.Create(fileName);
-    }
-
-    private static OggOpusWriterSettings BuildSettings(OpusFileWriterOptions options)
-    {
-        var settings = new OggOpusWriterSettings
-        {
-            Bitrate = options.Bitrate,
-            UseVariableBitrate = options.UseVariableBitrate,
-            Complexity = options.Complexity,
-            Application = options.Profile == OpusEncodingProfile.Voice
-                ? OpusApplication.OPUS_APPLICATION_VOIP
-                : OpusApplication.OPUS_APPLICATION_AUDIO,
-            SignalType = options.Profile == OpusEncodingProfile.Voice
-                ? OpusSignal.OPUS_SIGNAL_VOICE
-                : OpusSignal.OPUS_SIGNAL_MUSIC
-        };
-
-        foreach (var pair in options.Tags)
-        {
-            settings.Tags[pair.Key.ToUpperInvariant()] = new List<string> { pair.Value };
-        }
-
-        return settings;
     }
 
     /// <summary>
