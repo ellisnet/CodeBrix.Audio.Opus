@@ -226,10 +226,11 @@ public class OpusFileWriterTests
 
         using (var writer = new OpusFileWriter(piecesPath, SampleRate, 2))
         {
-            // Deliberately not frame-aligned: 777 samples is not a whole 20 ms Opus frame.
-            for (var offset = 0; offset < source.Length; offset += 777)
+            // Deliberately not aligned to the Opus frame: 778 samples is 389 stereo frames, a whole
+            // number of sample frames but not a whole 20 ms (960-frame) Opus frame.
+            for (var offset = 0; offset < source.Length; offset += 778)
             {
-                writer.Write(source, offset, Math.Min(777, source.Length - offset));
+                writer.Write(source, offset, Math.Min(778, source.Length - offset));
             }
         }
 
@@ -343,6 +344,196 @@ public class OpusFileWriterTests
             File.Delete(opusPath);
             if (File.Exists(wavPath)) File.Delete(wavPath);
         }
+    }
+
+    [Theory]
+    [InlineData(48000)]
+    [InlineData(44100)]
+    public void A_partial_stereo_frame_is_refused_by_both_write_overloads(int rate)
+    {
+        //Arrange
+        // At 48 kHz a stray sample would swap left and right for the rest of the stream; on the
+        // resampled path it would be dropped. Either way the input is wrong, so it is refused.
+        using var stream = new MemoryStream();
+        using var writer = new OpusFileWriter(stream, rate, 2);
+
+        //Act
+        var span = () => writer.Write(new float[777].AsSpan());
+        var array = () => writer.Write(new float[10], 1, 3);
+
+        //Assert
+        span.Should().Throw<ArgumentException>()
+            .WithMessage("The sample count (777) must be a whole number of 2-channel frames.*");
+        array.Should().Throw<ArgumentException>()
+            .WithMessage("The sample count (3) must be a whole number of 2-channel frames.*");
+    }
+
+    [Theory]
+    [InlineData(48000)]
+    [InlineData(44100)]
+    public void A_refused_partial_frame_leaves_the_writer_usable_and_the_file_exact(int rate)
+    {
+        //Arrange
+        var source = Tone(rate, 2, 0.5);
+        using var stream = new MemoryStream();
+
+        //Act
+        using (var writer = new OpusFileWriter(stream, rate, 2))
+        {
+            writer.Write(source.AsSpan(0, 1000));
+            var partial = () => writer.Write(source.AsSpan(1000, 7));
+            partial.Should().Throw<ArgumentException>();
+            writer.Write(source.AsSpan(1000));
+        }
+
+        stream.Position = 0;
+        using var reader = new OpusFileReader(stream);
+        var decoded = AudioAssertions.ReadAll(reader);
+
+        //Assert
+        var frames = source.Length / 2;
+        (decoded.Length / 2).Should().Be((int)Math.Round(frames * 48000.0 / rate));
+    }
+
+    [Theory]
+    [InlineData(48000)]
+    [InlineData(44100)]
+    public void Whole_frames_in_odd_sized_chunks_give_the_right_total_sample_count(int rate)
+    {
+        //Arrange
+        // 778 interleaved samples = 389 stereo frames per call: whole sample frames, never a whole
+        // 20 ms Opus frame, and an odd number of frames at that.
+        var source = Tone(rate, 2, 0.5);
+        using var stream = new MemoryStream();
+
+        //Act
+        using (var writer = new OpusFileWriter(stream, rate, 2))
+        {
+            for (var offset = 0; offset < source.Length; offset += 778)
+            {
+                writer.Write(source.AsSpan(offset, Math.Min(778, source.Length - offset)));
+            }
+        }
+
+        stream.Position = 0;
+        using var reader = new OpusFileReader(stream);
+        var decoded = AudioAssertions.ReadAll(reader);
+
+        //Assert
+        var frames = source.Length / 2;
+        (decoded.Length / 2).Should().Be((int)Math.Round(frames * 48000.0 / rate));
+    }
+
+    [Theory]
+    [InlineData(44100, 1)]
+    [InlineData(44100, 2)]
+    [InlineData(22050, 1)]
+    [InlineData(22050, 2)]
+    public void Resampled_input_decodes_to_exactly_its_own_length_at_48_khz(int rate, int channels)
+    {
+        //Arrange
+        // The resampler's delay is drained at the end and discarded through the pre-skip at the
+        // start, so the decoded stream is as long as the input - not short by the delay.
+        const double seconds = 1.5;
+        var source = Tone(rate, channels, seconds);
+
+        //Act
+        var decoded = WriteAndDecode(source, rate, channels);
+
+        //Assert
+        (decoded.Length / channels).Should().BeCloseTo((int)Math.Round(seconds * 48000), 1);
+    }
+
+    [Theory]
+    [InlineData(44100, 1)]
+    [InlineData(44100, 2)]
+    [InlineData(22050, 1)]
+    [InlineData(22050, 2)]
+    public void Resampled_input_starts_where_the_same_tone_at_48_khz_starts(int rate, int channels)
+    {
+        //Arrange
+        // 100 ms of silence, then a tone. With the resampler's delay in the pre-skip the decoded
+        // onset lands where the 48 kHz encoding of the same signal puts it; without it the
+        // resampled stream would start late by the delay (some 40 samples at 44.1 kHz).
+        var source = SilenceThenTone(rate, channels);
+        var reference = SilenceThenTone(48000, channels);
+
+        //Act
+        var decoded = WriteAndDecode(source, rate, channels);
+        var expected = WriteAndDecode(reference, 48000, channels);
+
+        //Assert
+        var onset = Onset(decoded, channels);
+        var expectedOnset = Onset(expected, channels);
+        expectedOnset.Should().BeCloseTo(4800, 48);
+        onset.Should().BeCloseTo(expectedOnset, 3);
+
+        // And the whole signal lines up, not just its first edge.
+        var (_, shift) = AudioAssertions.BestAlignment(decoded, expected, 64 * channels);
+        (shift / channels).Should().BeCloseTo(0, 2);
+    }
+
+    [Theory]
+    [InlineData(44100, 1)]
+    [InlineData(44100, 2)]
+    [InlineData(22050, 1)]
+    [InlineData(22050, 2)]
+    public void Resampled_input_keeps_its_last_samples_rather_than_ending_in_padding(int rate, int channels)
+    {
+        //Arrange
+        // A tone that runs right to the end. The resampler still holds the last of it when the
+        // caller stops writing; unless that tail is drained, the stream ends with the delay's worth
+        // of silent padding where the tone should be.
+        var source = Tone(rate, channels, 0.5);
+        var reference = Tone(48000, channels, 0.5);
+        const int tailFrames = 32;
+
+        //Act
+        var decoded = WriteAndDecode(source, rate, channels);
+        var expected = WriteAndDecode(reference, 48000, channels);
+
+        //Assert
+        var tail = decoded.AsSpan(decoded.Length - (tailFrames * channels));
+        var expectedTail = expected.AsSpan(expected.Length - (tailFrames * channels));
+        AudioAssertions.Rms(tail).Should().BeGreaterThan(0.2);
+        AudioAssertions.Rms(tail).Should().BeApproximately(AudioAssertions.Rms(expectedTail), 0.1);
+    }
+
+    /// <summary>100 ms of silence followed by 400 ms of the tone, at the given rate.</summary>
+    private static float[] SilenceThenTone(int rate, int channels)
+    {
+        var silentFrames = rate / 10;
+        var tone = Tone(rate, channels, 0.4);
+        var samples = new float[(silentFrames * channels) + tone.Length];
+        tone.CopyTo(samples, silentFrames * channels);
+
+        return samples;
+    }
+
+    /// <summary>The first frame in which any channel rises above a clear threshold.</summary>
+    private static int Onset(float[] interleaved, int channels)
+    {
+        for (var i = 0; i < interleaved.Length; i++)
+        {
+            if (Math.Abs(interleaved[i]) > 0.1f) return i / channels;
+        }
+
+        return -1;
+    }
+
+    private static float[] WriteAndDecode(float[] source, int rate, int channels)
+    {
+        using var stream = new MemoryStream();
+
+        using (var writer = new OpusFileWriter(stream, rate, channels))
+        {
+            writer.Write(source);
+        }
+
+        stream.Position = 0;
+        using var reader = new OpusFileReader(stream);
+
+        return AudioAssertions.ReadAll(reader);
     }
 
     private static string FindFfmpeg()

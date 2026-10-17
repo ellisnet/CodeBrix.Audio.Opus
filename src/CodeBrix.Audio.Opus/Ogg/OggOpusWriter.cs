@@ -56,14 +56,20 @@ internal sealed class OggOpusWriter : IDisposable
         WriteHeaders(settings);
     }
 
-    /// <summary>The pre-skip written into the identification header.</summary>
+    /// <summary>
+    /// The pre-skip written into the identification header: the encoder's lookahead plus, for
+    /// input not at 48 kHz, the input resampler's delay.
+    /// </summary>
     public int PreSkip => core.PreSkip;
 
     /// <summary>Encodes and writes interleaved samples at the declared input rate.</summary>
-    /// <param name="samples">Interleaved samples in [-1, 1].</param>
+    /// <param name="samples">Interleaved samples in [-1, 1]: a whole number of frames.</param>
+    /// <exception cref="ArgumentException">The length is not a multiple of the channel count.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Finish" /> has already run.</exception>
     public void Write(ReadOnlySpan<float> samples)
     {
         if (finished) throw new InvalidOperationException("This writer has already been finished.");
+        core.CheckWholeFrames(samples.Length, nameof(samples));
         if (samples.Length == 0) return;
 
         core.Write(samples);

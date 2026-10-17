@@ -507,7 +507,9 @@ public class OpusPacketEncoderTests
         var nullArray = () => encoder.Encode(null, 0, 0);
 
         //Assert
-        encode.Should().Throw<ArgumentException>();
+        // The same message the file writers give, since all of them refuse through the one core.
+        encode.Should().Throw<ArgumentException>()
+            .WithMessage("The sample count (3) must be a whole number of 2-channel frames.*");
         nullArray.Should().Throw<ArgumentNullException>();
         encoder.FramesWritten.Should().Be(0);
     }

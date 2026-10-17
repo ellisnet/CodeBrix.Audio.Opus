@@ -79,12 +79,20 @@ public sealed class OpusFileWriter : IDisposable
         }
     }
 
-    /// <summary>The pre-skip recorded in the file, in 48 kHz samples.</summary>
+    /// <summary>
+    /// The pre-skip recorded in the file, in 48 kHz samples: the encoder's lookahead plus, for
+    /// input not at 48 kHz, the input resampler's delay.
+    /// </summary>
     public int PreSkip => writer.PreSkip;
 
     /// <summary>Encodes and writes interleaved samples in [-1, 1].</summary>
-    /// <param name="samples">The samples to write.</param>
+    /// <param name="samples">
+    /// The samples to write: a whole number of frames (a multiple of the channel count). A call
+    /// need not hold a whole 20 ms Opus frame; the writer carries the remainder over.
+    /// </param>
+    /// <exception cref="ArgumentException">The length is not a multiple of the channel count.</exception>
     /// <exception cref="ObjectDisposedException">The writer has been disposed.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Finish" /> has already ended the file.</exception>
     public void Write(ReadOnlySpan<float> samples)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -95,8 +103,12 @@ public sealed class OpusFileWriter : IDisposable
     /// <summary>Encodes and writes interleaved samples in [-1, 1].</summary>
     /// <param name="samples">The buffer holding the samples.</param>
     /// <param name="offset">Index of the first sample to write.</param>
-    /// <param name="count">How many samples to write.</param>
+    /// <param name="count">How many samples to write: a multiple of the channel count.</param>
     /// <exception cref="ArgumentNullException"><paramref name="samples" /> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The range falls outside the buffer.</exception>
+    /// <exception cref="ArgumentException"><paramref name="count" /> is not a multiple of the channel count.</exception>
+    /// <exception cref="ObjectDisposedException">The writer has been disposed.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Finish" /> has already ended the file.</exception>
     public void Write(float[] samples, int offset, int count)
     {
         if (samples == null) throw new ArgumentNullException(nameof(samples));

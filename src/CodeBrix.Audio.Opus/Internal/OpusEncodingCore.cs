@@ -24,6 +24,13 @@ namespace CodeBrix.Audio.Opus.Internal;
 /// Each packet is queued with its first sample on the STREAM timeline at 48 kHz: the first packet
 /// starts at zero with the pre-skip still inside it, exactly as Ogg's granule positions count.
 /// </para>
+/// <para>
+/// Input that is not at 48 kHz goes through a resampler, which delays everything it outputs by a
+/// fixed amount. That delay is added to the pre-skip (so a decoder discards it along with the
+/// encoder's warm-up), and <see cref="Finish" /> pushes silence through the resampler to drain the
+/// last of the caller's audio out of it. The decoded stream then starts where the input started
+/// and is as long as the input, at 48 kHz.
+/// </para>
 /// </remarks>
 internal sealed class OpusEncodingCore
 {
@@ -43,6 +50,7 @@ internal sealed class OpusEncodingCore
     private readonly float[] frame;
     private readonly byte[] packetBuffer = new byte[MaxPacketBytes];
     private readonly int preSkip;
+    private readonly int resamplerDelay;
     private readonly byte[] identificationHeader;
     private readonly Queue<(byte[] Data, long FirstSample)> packets = new Queue<(byte[] Data, long FirstSample)>();
 
@@ -77,15 +85,20 @@ internal sealed class OpusEncodingCore
             SignalType = settings.SignalType
         };
 
-        // The encoder's lookahead IS the pre-skip: those leading output samples are warm-up, not
-        // audio, and the decoder discards exactly this many.
-        preSkip = encoder.Lookahead;
-
         if (inputSampleRate != EncodeSampleRate)
         {
             resampler = ResamplerFactory.CreateResampler(
                 channels, inputSampleRate, EncodeSampleRate, settings.ResamplerQuality);
+
+            // The resampler's output lags its input by this many 48 kHz samples. It has to be known
+            // now, not at Finish, because it goes into the identification header written first.
+            resamplerDelay = resampler.OutputLatencySamples;
         }
+
+        // The pre-skip is everything at the head of the stream that is not the caller's audio: the
+        // encoder's lookahead (warm-up the decoder discards) plus, for resampled input, the
+        // resampler's delay ahead of the first input sample.
+        preSkip = encoder.Lookahead + resamplerDelay;
 
         frame = new float[FrameSamplesPerChannel * channels];
 
@@ -107,8 +120,14 @@ internal sealed class OpusEncodingCore
     /// <summary>The rate of the samples handed to <see cref="Write" />.</summary>
     public int InputSampleRate => inputSampleRate;
 
-    /// <summary>The encoder's lookahead, in 48 kHz samples: what a decoder discards at the start.</summary>
+    /// <summary>
+    /// What a decoder discards at the start, in 48 kHz samples: the encoder's lookahead plus, for
+    /// input not at 48 kHz, the input resampler's delay.
+    /// </summary>
     public int PreSkip => preSkip;
+
+    /// <summary>The input resampler's delay in 48 kHz samples, part of <see cref="PreSkip" />; 0 at 48 kHz.</summary>
+    public int ResamplerDelay => resamplerDelay;
 
     /// <summary>
     /// The 19-byte family-0 OpusHead for this stream. The array is owned by this core; callers
@@ -123,10 +142,11 @@ internal sealed class OpusEncodingCore
     public long SamplesEncoded => samplesEncoded;
 
     /// <summary>
-    /// Where the audible stream ends on the 48 kHz timeline: the pre-skip plus every input sample
-    /// at the encode rate. This is the final granule position of an Ogg Opus stream.
+    /// Where the audible stream ends on the 48 kHz timeline: the pre-skip plus the input's length
+    /// at the encode rate (the input frames scaled to 48 kHz and rounded to the nearest sample).
+    /// This is the final granule position of an Ogg Opus stream.
     /// </summary>
-    public long TargetSampleCount => preSkip + (interleavedSamplesAtEncodeRate / channels);
+    public long TargetSampleCount => preSkip + AtEncodeRate(InputFrames);
 
     /// <summary>Whether <see cref="Finish" /> has run.</summary>
     public bool IsFinished => finished;
@@ -146,6 +166,20 @@ internal sealed class OpusEncodingCore
                 "Opus encoding here supports mono and stereo (channel mapping family 0).");
         }
         if (inputSampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(inputSampleRate));
+    }
+
+    /// <summary>Throws when an interleaved sample count is not a whole number of frames.</summary>
+    /// <param name="sampleCount">The interleaved sample count offered.</param>
+    /// <param name="paramName">The caller's parameter name, for the exception.</param>
+    /// <exception cref="ArgumentException"><paramref name="sampleCount" /> is not a multiple of <see cref="Channels" />.</exception>
+    public void CheckWholeFrames(int sampleCount, string paramName)
+    {
+        if (sampleCount % channels != 0)
+        {
+            throw new ArgumentException(
+                $"The sample count ({sampleCount}) must be a whole number of {channels}-channel frames.",
+                paramName);
+        }
     }
 
     /// <summary>Takes the oldest queued packet.</summary>
@@ -170,20 +204,30 @@ internal sealed class OpusEncodingCore
     public void ClearQueue() => packets.Clear();
 
     /// <summary>Encodes interleaved samples at the input rate, queueing every packet that completes.</summary>
-    /// <param name="samples">Interleaved samples in [-1, 1].</param>
+    /// <param name="samples">Interleaved samples in [-1, 1]: a whole number of frames.</param>
     /// <exception cref="InvalidOperationException"><see cref="Finish" /> has already run.</exception>
+    /// <exception cref="ArgumentException">The length is not a multiple of <see cref="Channels" />.</exception>
     public void Write(ReadOnlySpan<float> samples)
     {
         if (finished) throw new InvalidOperationException("This encoder has already been finished.");
+
+        // A partial frame is refused rather than buffered: at 48 kHz the stray sample would shift
+        // the interleave for the rest of the stream (left becoming right), and on the resampled
+        // path it would be silently dropped.
+        CheckWholeFrames(samples.Length, nameof(samples));
         if (samples.Length == 0) return;
 
         interleavedInputSamples += samples.Length;
 
-        var atEncodeRate = resampler == null ? samples : Resample(samples);
+        Append(resampler == null ? samples : Resample(samples));
+    }
 
-        // Accumulate INTERLEAVED samples and divide once, at the end. Dividing per call would
-        // truncate whenever a caller writes a chunk that is not a whole number of frames, and
-        // those half-frames add up: writing 0.5 s of stereo in 777-sample pieces loses 31 frames.
+    /// <summary>Feeds 48 kHz interleaved samples into the frame buffer, encoding each frame that fills.</summary>
+    private void Append(ReadOnlySpan<float> atEncodeRate)
+    {
+        // Accumulate INTERLEAVED samples and divide once, at the end. A resampler call need not
+        // hand back a whole number of 20 ms frames, so the frame buffer simply carries whatever
+        // is left over into the next call.
         interleavedSamplesAtEncodeRate += atEncodeRate.Length;
 
         var consumed = 0;
@@ -200,8 +244,9 @@ internal sealed class OpusEncodingCore
     }
 
     /// <summary>
-    /// Ends the stream: pads the last partial frame with silence and encodes it, then encodes
-    /// silent frames until the packets hold the pre-skip plus every input sample. Idempotent.
+    /// Ends the stream: drains the input resampler (if there is one) by pushing silence through
+    /// it, pads the last partial frame with silence and encodes it, then encodes silent frames
+    /// until the packets hold the pre-skip plus every input sample. Idempotent.
     /// </summary>
     /// <remarks>
     /// After this, <see cref="SamplesEncoded" /> minus <see cref="TargetSampleCount" /> is the
@@ -214,6 +259,8 @@ internal sealed class OpusEncodingCore
         finished = true;
 
         var targetSamples = TargetSampleCount;
+
+        if (resampler != null) DrainResampler();
 
         if (frameFill > 0)
         {
@@ -248,6 +295,41 @@ internal sealed class OpusEncodingCore
 
         samplesEncoded += FrameSamplesPerChannel;
         frameFill = 0;
+    }
+
+    /// <summary>The 48 kHz length of a run of input frames, rounded to the nearest sample.</summary>
+    private long AtEncodeRate(long inputFrames) =>
+        resampler == null
+            ? inputFrames
+            : ((inputFrames * EncodeSampleRate) + (inputSampleRate / 2)) / inputSampleRate;
+
+    /// <summary>
+    /// Pushes silence through the resampler until everything the caller wrote has come out of it:
+    /// the resampler's delay plus the input's length at 48 kHz. Anything beyond that is the
+    /// filter's ringing past the end of the input, which the end trim would discard anyway, so it
+    /// is not appended.
+    /// </summary>
+    private void DrainResampler()
+    {
+        var produced = interleavedSamplesAtEncodeRate / channels;
+        var remaining = resamplerDelay + AtEncodeRate(InputFrames) - produced;
+
+        for (var attempts = 0; remaining > 0; attempts++)
+        {
+            if (attempts > 64)
+            {
+                throw new InvalidOperationException("The input resampler did not drain.");
+            }
+
+            // Enough silent input to cover what is still owed, plus one frame of slack for the
+            // resampler's fractional position.
+            var silentFrames = (int)((remaining * inputSampleRate / EncodeSampleRate) + 1);
+            var output = Resample(new float[silentFrames * channels]);
+
+            var take = (int)Math.Min(remaining, output.Length / channels);
+            Append(output[..(take * channels)]);
+            remaining -= take;
+        }
     }
 
     private ReadOnlySpan<float> Resample(ReadOnlySpan<float> samples)

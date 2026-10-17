@@ -158,11 +158,28 @@ ENCODING CORE for what it proves.
 THE ONE ENCODING CORE
 =====================
 There is exactly one place that encodes: Internal/OpusEncodingCore. It owns
-input resampling, 20 ms frame accumulation, the encoder's lookahead (= the
-pre-skip), the OpusHead bytes, and the end-of-stream rule (pad the last partial
-frame with silence, then add silent frames until the packets hold pre-skip +
-every input sample at 48 kHz). It queues packets stamped with their first
-sample on the stream timeline and knows nothing about Ogg.
+input resampling, 20 ms frame accumulation, the pre-skip, the OpusHead bytes,
+and the end-of-stream rule (drain the resampler, pad the last partial frame with
+silence, then add silent frames until the packets hold pre-skip + every input
+sample at 48 kHz). It queues packets stamped with their first sample on the
+stream timeline and knows nothing about Ogg.
+
+It refuses partial frames: Write (and so OggOpusWriter.Write, OpusFileWriter.Write
+and, through CheckWholeFrames, OpusPacketEncoder.Encode) throws ArgumentException
+for a sample count that is not a multiple of the channel count, with one shared
+message. OpusSoundEncoder slices engine input to whole frames before writing,
+which its return value already reported.
+
+THE PRE-SKIP AND THE RESAMPLER. pre-skip = encoder lookahead + resampler delay,
+where the delay is IResampler.OutputLatencySamples (0 at 48 kHz, no resampler).
+It is computed in the constructor because the OpusHead (and so the first Ogg
+page, and OpusPacketEncoder.IdentificationHeader) is fixed there. TargetSampleCount
+(the final granule) = pre-skip + round(input frames * 48000 / input rate), and
+Finish first pushes silence through the resampler until it has output delay +
+that length, keeping exactly that much, so the last real input reaches the
+encoder. The 48 kHz path is untouched by both, which is what keeps its bytes
+identical to the pre-core writer. Without the delay in the pre-skip the decoded
+stream would start late by the delay and lose that much off its end.
 
 Every encoding face sits on it:
 
@@ -186,18 +203,26 @@ tags). Nothing was moved into a shared base class, so the published
 OpusFileWriterOptions surface is binary-compatible. One internal helper,
 OpusEncoderSettingsMapper, maps either onto OggOpusWriterSettings, so a given
 tuning means the same thing on both faces. The engine path (OpusCodecFactory ->
-OpusSoundEncoder) still passes a default OggOpusWriterSettings, whose signal
-type is AUTO rather than the Music profile's MUSIC; that difference predates
-the core and is preserved.
+OpusSoundEncoder) maps a default OpusEncoderOptions through the same helper, so
+it encodes with MUSIC + AUDIO exactly as OpusFileWriter with default options
+does; OpusCodecFactoryTests pins that, packet for packet. (ICodecFactory gives
+the factory no way to receive options, so there is nothing more to thread
+through.) A bare new OggOpusWriterSettings() still means signal type AUTO; no
+production path uses it.
 
 THE BYTE-STABILITY PROOF. When the core was extracted, OggOpusWriter's output
 had to stay byte-identical. OggOpusWriterByteStabilityTests keeps the pre-core
-writer verbatim as a private nested LegacyOggOpusWriter and, for every case
-(mono / stereo 48 kHz, stereo 44.1 kHz, the Voice profile at 16 kHz, 777-sample
-chunking at both rates, an odd length, no input at all, the engine's default
-settings, and two 12-second streams long enough to span several Ogg pages),
-writes the same tone through both with the same serial number and asserts the
-bytes are equal. The reference is regenerated on every run rather than stored,
+writer verbatim as a private nested LegacyOggOpusWriter and, for every 48 kHz
+case (mono, stereo, 778-sample chunking, an odd length, no input at all, the
+core's bare default settings, and a 12-second stream long enough to span several
+Ogg pages), writes the same tone through both with the same serial number and
+asserts the bytes are equal. Resampled input (stereo 44.1 kHz, 778-chunked
+44.1 kHz, mono 22.05 kHz, the Voice profile at 16 kHz, a 12-second mono 44.1 kHz
+stream) is DELIBERATELY different - the resampler delay in the pre-skip and the
+drained tail - and those cases assert exactly that difference: the same OpusHead
+but for its pre-skip (larger by the resampler delay), the same comment header,
+the same audio packets up to the one where the legacy writer began padding, and
+a final granule of the new pre-skip plus the input's exact 48 kHz length. The reference is regenerated on every run rather than stored,
 so the proof holds on any machine whatever its floating-point behaviour. The
 long cases matter: a short stream fits on its final page, whose granule is
 overwritten, so only a multi-page stream checks per-packet granule positions.

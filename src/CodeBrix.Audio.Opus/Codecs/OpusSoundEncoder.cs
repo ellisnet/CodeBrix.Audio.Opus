@@ -37,11 +37,15 @@ internal sealed class OpusSoundEncoder : ISoundEncoder
         if (IsDisposed) return 0;
         if (samples.Length == 0) return 0;
 
-        writer.Write(samples);
+        // The writer takes whole frames only. Should the engine ever hand over a partial frame, the
+        // stray samples are left unencoded - and reported as such by the return value - rather
+        // than shifting the channel interleave for the rest of the recording.
+        var whole = samples.Length - (samples.Length % channels);
+        writer.Write(samples[..whole]);
 
         // Everything handed over is buffered and will reach the file, so the whole span counts as
         // encoded even though the packet for it may not be written until a later call.
-        return samples.Length - (samples.Length % channels);
+        return whole;
     }
 
     /// <inheritdoc />

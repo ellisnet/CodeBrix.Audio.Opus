@@ -116,7 +116,7 @@ options.Tags["TITLE"] = "Voice memo";
 
 using (var writer = new OpusFileWriter("memo.opus", sampleRate: 44100, channels: 1, options))
 {
-    writer.Write(samples);   // any input rate; resampled to 48 kHz on the way in
+    writer.Write(samples);   // whole frames, any input rate; resampled to 48 kHz on the way in
 }
 // Dispose is what finishes the file - see the note below.
 ```
@@ -204,6 +204,14 @@ with the pre-skip still inside it, which the container states separately (Matros
 `DiscardPadding`). Finish before you dispose - disposing discards any packets not yet taken.
 
 ## Sharp edges
+
+* **Write whole frames.** `OpusFileWriter.Write` and `OpusPacketEncoder.Encode` take interleaved
+  samples in whole frames - a count that is not a multiple of the channel count throws
+  `ArgumentException` rather than swapping left and right (or dropping a sample) for the rest of
+  the stream. Chunks need not be whole 20 ms Opus frames.
+* **The pre-skip is not a constant.** For input not at 48 kHz it includes the input resampler's
+  delay as well as the encoder's lookahead, so the decoded audio lines up with the input and is
+  exactly as long. Read it from `PreSkip` (or the file), never hard-code it.
 
 * **Dispose the writer.** Like `WaveFileWriter`, `OpusFileWriter` only produces a complete,
   correctly-described file once it is finished: the last partial frame is padded and flushed there,

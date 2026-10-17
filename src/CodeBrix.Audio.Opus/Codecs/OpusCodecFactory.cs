@@ -5,6 +5,7 @@ using CodeBrix.Audio.Codecs;
 using CodeBrix.Audio.Engine.Enums;
 using CodeBrix.Audio.Engine.Interfaces;
 using CodeBrix.Audio.Engine.Structs;
+using CodeBrix.Audio.Opus.Internal;
 using CodeBrix.Audio.Opus.Ogg;
 
 namespace CodeBrix.Audio.Opus.Codecs;
@@ -119,7 +120,11 @@ public sealed class OpusCodecFactory : ICodecFactory
 
         var sampleRate = format.SampleRate > 0 ? format.SampleRate : OggOpusWriter.EncodeSampleRate;
 
-        return new OpusSoundEncoder(stream, channels, sampleRate, new OggOpusWriterSettings());
+        // Through the same mapper as the public encoders, with their defaults (the Music profile:
+        // music signal, general-audio application), so a Recorder's .opus file is encoded exactly
+        // as an OpusFileWriter with default options would encode the same audio.
+        return new OpusSoundEncoder(stream, channels, sampleRate,
+            OpusEncoderSettingsMapper.ToSettings(new OpusEncoderOptions()));
     }
 
     /// <summary>Checks that the stream is an Ogg container carrying Opus specifically.</summary>

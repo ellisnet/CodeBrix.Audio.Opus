@@ -216,6 +216,22 @@ OpusFileWriter : IDisposable  (CodeBrix.Audio.Opus)
   resampled to the 48 kHz Opus encodes at; the rate you declare is still
   recorded in the file header as the rate the encoder was given.
 
+  Write takes a WHOLE number of frames: the sample count (count, for the array
+  overload) must be a multiple of channels, else ArgumentException ("The sample
+  count (N) must be a whole number of C-channel frames.") and nothing is
+  written - the writer stays usable. A count of 0 does nothing. A call need not
+  hold a whole 20 ms Opus frame; the writer carries the remainder over. Write
+  after Finish throws InvalidOperationException; after Dispose,
+  ObjectDisposedException.
+
+  PreSkip is the encoder's lookahead plus, when sampleRate is not 48000, the
+  input resampler's delay (in 48 kHz samples). Including the delay is what makes
+  the decoded audio start where the input started and end where it ended:
+  Finish pushes silence through the resampler to drain the last of the input,
+  and the final granule is PreSkip plus the input's length at 48 kHz
+  (frames * 48000 / sampleRate, rounded). So read the pre-skip from the
+  writer or the file, never assume a constant.
+
   Same ownership split as the reader: the string overload creates the file
   (overwriting an existing one) and owns it; the Stream overload does not own
   the stream.
@@ -262,6 +278,7 @@ OpusPacketEncoder : IDisposable  (sealed, CodeBrix.Audio.Opus)
     int InputSampleRate { get; }
     int SampleRate { get; }                   // always 48000 (the packets' rate)
     int PreSkip { get; }                      // 48 kHz samples, fixed at construction
+                                              // (lookahead + resampler delay if not 48 kHz)
     ReadOnlyMemory<byte> IdentificationHeader { get; }   // the 19-byte OpusHead
     void Encode(ReadOnlySpan<float> interleaved)
     void Encode(float[] samples, int offset, int count)
@@ -282,7 +299,13 @@ OpusPacketEncoder : IDisposable  (sealed, CodeBrix.Audio.Opus)
   and inputSampleRate must be positive, else ArgumentOutOfRangeException; any
   rate is accepted and anything but 48000 is resampled on the way in, exactly as
   OpusFileWriter does. Encode takes a WHOLE number of frames - a length that is
-  not a multiple of Channels throws ArgumentException.
+  not a multiple of Channels throws ArgumentException, with the same message
+  OpusFileWriter.Write gives.
+
+  PreSkip, as on OpusFileWriter, is the encoder's lookahead plus the input
+  resampler's delay when inputSampleRate is not 48000; Finish drains the
+  resampler, so packets emitted - PreSkip - TrailingTrimSamples is the input's
+  length at 48 kHz (rounded to the nearest sample).
 
   Encode queues every 20 ms packet that completes; take them, oldest first,
   with TryReadPacket. Finish pads and encodes the last partial frame, adds
@@ -406,7 +429,10 @@ OpusCodecFactory : ICodecFactory  (CodeBrix.Audio.Opus.Codecs)
   CreateEncoder is what the engine's Recorder reaches, so
   new Recorder(captureDevice, stream, "opus") records straight to Ogg Opus once
   the factory is registered. It accepts only the "opus" format id and only 1 or
-  2 channels, returning null otherwise.
+  2 channels, returning null otherwise. The encoder it returns is tuned exactly
+  as OpusFileWriter with default OpusFileWriterOptions (the Music profile): for
+  the same audio it writes the same headers and packets, serial number aside.
+  Its Encode encodes whole frames only and returns how many samples that was.
 
 OpusPacketCodecFactory : IPacketCodecFactory  (CodeBrix.Audio.Opus.Codecs)
 --------------------------------------------------------------------------
@@ -863,8 +889,9 @@ What a container needs, and where it comes from:
     timeline: the first packet starts at 0, and the pre-skip is still inside
     it. Do not shift the packets to hide the pre-skip; state it.
 
-  PRE-SKIP = CodecDelay. PreSkip is the encoder's lookahead, in 48 kHz samples,
-    fixed at construction. Matroska states it as the track's CodecDelay (in
+  PRE-SKIP = CodecDelay. PreSkip is the encoder's lookahead, plus the input
+    resampler's delay when the input is not at 48 kHz, in 48 kHz samples, fixed
+    at construction. Matroska states it as the track's CodecDelay (in
     nanoseconds: PreSkip * 1_000_000_000 / 48000); the OpusHead carries it too.
     A decoder discards that many samples from the start.
 
@@ -987,6 +1014,13 @@ COMMON PITFALLS TO AVOID
     starts early, with a click. Both the reader and the writer handle it - which
     is why you should take Length and TotalTime from the reader rather than
     computing them from the file yourself.
+
+  - WRITE WHOLE FRAMES. OpusFileWriter.Write and OpusPacketEncoder.Encode refuse
+    a sample count that is not a multiple of the channel count (ArgumentException)
+    rather than guess: buffered, the stray sample would swap left and right for
+    the rest of a 48 kHz stream; resampled, it would be dropped. Chunk sizes are
+    otherwise free - 778 samples of stereo (389 frames) per call is fine; 777 is
+    not.
 
   - DISPOSE THE WRITER. OpusFileWriter only produces a complete, correctly
     described file on Dispose(): the final partial frame is padded and flushed
@@ -1146,7 +1180,13 @@ The test suite is the executable documentation for everything above.
                               input rate is resampled and keeps its duration;
                               tags survive; the Voice profile at a speech
                               bitrate; writing in several calls matches writing
-                              in one; out-of-range options rejected;
+                              in one; a partial frame refused by both Write
+                              overloads at 48 and 44.1 kHz, the writer still
+                              usable after; resampled input (44.1 / 22.05 kHz,
+                              mono and stereo) decoding to exactly its own
+                              length, starting where the 48 kHz encoding of the
+                              same signal starts, and keeping its last samples;
+                              out-of-range options rejected;
                               multichannel declined; stream ownership; and
                               ffmpeg decoding what this library wrote.
   OpusCodecFactoryTests.cs    FactoryId / Priority / SupportedFormatIds against
@@ -1155,8 +1195,10 @@ The test suite is the executable documentation for everything above.
                               stream offered as either "ogg" or "opus" must be
                               accepted); rewinding a stream an earlier factory
                               left mid-way; format detection without being told;
-                              encoder created for "opus" and NOT for "ogg"; and
-                              a factory-built decoder decoding real audio.
+                              encoder created for "opus" and NOT for "ogg"; a
+                              factory-built decoder decoding real audio; and the
+                              factory's encoder writing the same headers and
+                              packets as OpusFileWriter with default options.
   OpusPacketCodecFactoryTests.cs
                               The packet seam. Factory identity and the two ways
                               it says no (null for another codec or unreadable
@@ -1245,9 +1287,16 @@ The test suite is the executable documentation for everything above.
                               Dispose / queue rules and the refusals; and ffmpeg
                               decoding an Ogg file rebuilt from the packets.
   OggOpusWriterByteStabilityTests.cs
-                              That the Ogg writer's bytes are unchanged by the
-                              shared encoding core, against the pre-core writer
-                              kept in the test as the reference.
+                              That the Ogg writer's bytes at 48 kHz are
+                              unchanged by the shared encoding core, against the
+                              pre-core writer kept in the test as the reference;
+                              and that resampled input differs from it only by
+                              the resampler delay in the pre-skip and the
+                              drained tail.
+  OggOpusWriterTests.cs       The Ogg layer itself: partial frames refused, an
+                              empty write a no-op, odd-sized whole-frame chunks
+                              ending on the exact granule, and the pre-skip
+                              growing by the resampler delay off 48 kHz.
 
 The fixtures those tests read are described at
 https://github.com/ellisnet/CodeBrix.Audio.Opus/blob/main/tests/Assets/audio/AUDIO-FIXTURES.txt

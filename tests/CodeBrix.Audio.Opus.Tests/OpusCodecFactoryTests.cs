@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using CodeBrix.Audio.Engine.Enums;
 using CodeBrix.Audio.Engine.Structs;
 using CodeBrix.Audio.Opus.Codecs;
+using CodeBrix.Audio.Opus.Ogg;
 using SilverAssertions;
 using SilverAssertions.Collections;
 using SilverAssertions.Numeric;
@@ -199,5 +201,105 @@ public class OpusCodecFactoryTests
         //Assert
         read.Should().BeGreaterThan(0);
         AudioAssertions.Rms(buffer.AsSpan(0, read)).Should().BeGreaterThan(0.05);
+    }
+
+    [Theory]
+    [InlineData(2, 48000)]
+    [InlineData(1, 48000)]
+    [InlineData(2, 44100)]
+    public void The_engine_encoder_writes_the_same_stream_as_an_OpusFileWriter_with_default_options(
+        int channels, int rate)
+    {
+        //Arrange
+        // The engine's encoder goes through the same options mapper as the public writers, with
+        // their defaults (Music: music signal, general-audio application). The two streams carry
+        // different random serial numbers, so the comparison is of what the pages carry: both
+        // headers, every audio packet, and the final granule.
+        var source = Tone(rate, channels, 0.75);
+        var format = new AudioFormat
+        {
+            Format = SampleFormat.F32,
+            Channels = channels,
+            Layout = AudioFormat.GetLayoutFromChannels(channels),
+            SampleRate = rate
+        };
+
+        using var engineStream = new MemoryStream();
+        using var fileStream = new MemoryStream();
+
+        //Act
+        using (var encoder = new OpusCodecFactory().CreateEncoder(engineStream, "opus", format))
+        {
+            for (var offset = 0; offset < source.Length; offset += 4096)
+            {
+                encoder.Encode(source.AsSpan(offset, Math.Min(4096, source.Length - offset)));
+            }
+        }
+
+        using (var writer = new OpusFileWriter(fileStream, rate, channels))
+        {
+            writer.Write(source);
+        }
+
+        var engine = Lift(engineStream.ToArray());
+        var file = Lift(fileStream.ToArray());
+
+        //Assert
+        engine.Packets.Count.Should().BeGreaterThan(10);
+        engine.Head.Should().Equal(file.Head);
+        engine.Tags.Should().Equal(file.Tags);
+        engine.FinalGranule.Should().Be(file.FinalGranule);
+        engine.Packets.Count.Should().Be(file.Packets.Count);
+        for (var i = 0; i < file.Packets.Count; i++)
+        {
+            engine.Packets[i].Should().Equal(file.Packets[i]);
+        }
+    }
+
+    private static float[] Tone(int sampleRate, int channels, double seconds)
+    {
+        var frames = (int)(sampleRate * seconds);
+        var samples = new float[frames * channels];
+
+        for (var i = 0; i < frames; i++)
+        {
+            for (var c = 0; c < channels; c++)
+            {
+                var f = 440 * (c == 1 ? 1.5 : 1.0);
+                samples[(i * channels) + c] = (float)(0.5 * Math.Sin(2 * Math.PI * f * i / sampleRate));
+            }
+        }
+
+        return samples;
+    }
+
+    private sealed class Lifted
+    {
+        public byte[] Head { get; set; }
+        public byte[] Tags { get; set; }
+        public List<byte[]> Packets { get; } = new List<byte[]>();
+        public long FinalGranule { get; set; }
+    }
+
+    private static Lifted Lift(byte[] bytes)
+    {
+        using var stream = new MemoryStream(bytes);
+        using var pages = new OggPageReader(stream, leaveOpen: true);
+        var lifted = new Lifted();
+
+        pages.TryReadPacket(out var head).Should().BeTrue();
+        lifted.Head = head.Data;
+        pages.TryReadPacket(out var tags).Should().BeTrue();
+        lifted.Tags = tags.Data;
+
+        while (pages.TryReadPacket(out var packet))
+        {
+            if (packet.Data.Length == 0) continue;
+
+            lifted.Packets.Add(packet.Data);
+            if (packet.GranulePosition >= 0) lifted.FinalGranule = packet.GranulePosition;
+        }
+
+        return lifted;
     }
 }

@@ -75,8 +75,10 @@ public sealed class OpusPacketEncoder : IDisposable
     public int SampleRate => OpusEncodingCore.EncodeSampleRate;
 
     /// <summary>
-    /// The encoder's lookahead in 48 kHz samples: the warm-up at the start of the first packet(s)
-    /// that a decoder discards. Fixed at construction; it is the pre-skip field of
+    /// What a decoder discards at the start of the first packet(s), in 48 kHz samples: the
+    /// encoder's lookahead (warm-up) plus, when <see cref="InputSampleRate" /> is not 48000, the
+    /// input resampler's delay, so that the decoded audio starts exactly where the input started.
+    /// Fixed at construction; it is the pre-skip field of
     /// <see cref="IdentificationHeader" /> and the value a Matroska muxer states as CodecDelay
     /// (converted to nanoseconds).
     /// </summary>
@@ -154,12 +156,9 @@ public sealed class OpusPacketEncoder : IDisposable
     {
         CheckWritable();
 
-        if (interleaved.Length % core.Channels != 0)
-        {
-            throw new ArgumentException(
-                $"The sample count ({interleaved.Length}) must be a whole number of {core.Channels}-channel frames.",
-                nameof(interleaved));
-        }
+        // The check the encoding core makes itself, made here first so the exception names this
+        // method's parameter.
+        core.CheckWholeFrames(interleaved.Length, nameof(interleaved));
 
         core.Write(interleaved);
     }

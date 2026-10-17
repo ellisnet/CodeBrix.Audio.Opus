@@ -7,6 +7,7 @@ using CodeBrix.Audio.Opus.Internal;
 using CodeBrix.Audio.Opus.Ogg;
 using SilverAssertions;
 using SilverAssertions.Collections;
+using SilverAssertions.Numeric;
 using SilverAssertions.Primitives;
 using Xunit;
 
@@ -14,15 +15,25 @@ namespace CodeBrix.Audio.Opus.Tests;
 
 /// <summary>
 /// Proves that the Ogg Opus writer's output did not change, by a single byte, when its encoding
-/// core was moved out into the shared core the packet encoder also uses.
+/// core was moved out into the shared core the packet encoder also uses - and, for resampled
+/// input, that it changed in exactly the one deliberate way the resampler-tail fix intends.
 /// </summary>
 /// <remarks>
 /// <para>
 /// The reference is regenerated on every run rather than stored: <see cref="LegacyOggOpusWriter" />
 /// below is the writer exactly as it stood before the refactor - its own frame accumulation,
 /// resampling, pre-skip and padding rule, straight over the vendored encoder - and both writers
-/// are given the same tone, settings and serial number. The encoder is deterministic, so any
-/// difference at all means the refactor changed what the package writes.
+/// are given the same tone, settings and serial number. The encoder is deterministic, so at
+/// 48 kHz any difference at all means the package changed what it writes.
+/// </para>
+/// <para>
+/// Input at any other rate is DELIBERATELY different from the legacy writer: the pre-skip now
+/// includes the input resampler's delay, and the resampler's tail is drained at the end, so the
+/// decoded stream starts where the input starts and ends where it ends (the legacy writer stated
+/// the right length but shifted the audio late by the delay, cutting the delay's worth off the end). Those cases are held
+/// to that exact difference and no other: the same OpusHead apart from its pre-skip field, the
+/// same comment header, the same audio packets up to the one where the legacy writer began
+/// padding, and a final granule of the new pre-skip plus the input's exact length at 48 kHz.
 /// </para>
 /// <para>
 /// Regenerating on the spot keeps the proof valid on any machine. A stored file would pin the
@@ -32,24 +43,36 @@ namespace CodeBrix.Audio.Opus.Tests;
 public class OggOpusWriterByteStabilityTests
 {
     private const uint SerialNumber = 0x5EED1234;
+    private const int Frame = 960;
 
     /// <summary>
-    /// The cases: mono, stereo, resampled, voice, odd-chunked, odd-length, empty, engine defaults,
-    /// and two long enough to span several Ogg pages - a short stream fits on its final page,
-    /// whose granule is overwritten, so only a long one proves the per-packet granule positions.
+    /// The 48 kHz cases, held to byte equality: mono, stereo, chunked, odd-length, empty, the
+    /// core's own default settings, and one long enough to span several Ogg pages - a short
+    /// stream fits on its final page, whose granule is overwritten, so only a long one proves the
+    /// per-packet granule positions.
     /// </summary>
     public static TheoryData<string> Cases => new TheoryData<string>
     {
         "mono_48k",
         "stereo_48k",
-        "stereo_44k1",
-        "voice_16k",
-        "stereo_48k_in_777_sample_chunks",
-        "stereo_44k1_in_777_sample_chunks",
+        "stereo_48k_in_778_sample_chunks",
         "mono_48k_12345_samples",
         "stereo_48k_no_input",
-        "stereo_48k_engine_default_settings",
-        "stereo_48k_twelve_seconds_over_several_pages",
+        "stereo_48k_default_core_settings",
+        "stereo_48k_twelve_seconds_over_several_pages"
+    };
+
+    /// <summary>
+    /// The resampled cases, held to the deliberate pre-skip and tail difference and nothing more.
+    /// The long one spans several pages, so it also proves the per-packet granules moved with the
+    /// pre-skip only where they should.
+    /// </summary>
+    public static TheoryData<string> ResampledCases => new TheoryData<string>
+    {
+        "stereo_44k1",
+        "voice_16k",
+        "stereo_44k1_in_778_sample_chunks",
+        "mono_22k05",
         "mono_44k1_twelve_seconds_in_4096_sample_chunks"
     };
 
@@ -79,11 +102,12 @@ public class OggOpusWriterByteStabilityTests
             "voice_16k" => (16000, 1,
                 FileSettings(new OpusFileWriterOptions { Profile = OpusEncodingProfile.Voice, Bitrate = 24_000 }),
                 Tone(16000, 1, 0.5, 300), int.MaxValue),
-            "stereo_48k_in_777_sample_chunks" => (48000, 2, FileSettings(null), Tone(48000, 2, 0.5), 777),
-            "stereo_44k1_in_777_sample_chunks" => (44100, 2, FileSettings(null), Tone(44100, 2, 0.5), 777),
+            "stereo_48k_in_778_sample_chunks" => (48000, 2, FileSettings(null), Tone(48000, 2, 0.5), 778),
+            "stereo_44k1_in_778_sample_chunks" => (44100, 2, FileSettings(null), Tone(44100, 2, 0.5), 778),
+            "mono_22k05" => (22050, 1, FileSettings(null), Tone(22050, 1, 0.5), int.MaxValue),
             "mono_48k_12345_samples" => (48000, 1, FileSettings(null), Tone(48000, 1, 0.5)[..12345], int.MaxValue),
             "stereo_48k_no_input" => (48000, 2, FileSettings(null), Array.Empty<float>(), int.MaxValue),
-            "stereo_48k_engine_default_settings" => (48000, 2, new OggOpusWriterSettings(), Tone(48000, 2, 0.5), int.MaxValue),
+            "stereo_48k_default_core_settings" => (48000, 2, new OggOpusWriterSettings(), Tone(48000, 2, 0.5), int.MaxValue),
             "stereo_48k_twelve_seconds_over_several_pages" => (48000, 2, FileSettings(null), Tone(48000, 2, 12), int.MaxValue),
             "mono_44k1_twelve_seconds_in_4096_sample_chunks" => (44100, 1, FileSettings(null), Tone(44100, 1, 12), 4096),
             _ => throw new ArgumentOutOfRangeException(nameof(name))
@@ -92,16 +116,13 @@ public class OggOpusWriterByteStabilityTests
     private static OggOpusWriterSettings FileSettings(OpusFileWriterOptions options) =>
         OpusEncoderSettingsMapper.ToSettings(options ?? new OpusFileWriterOptions());
 
-    [Theory]
-    [MemberData(nameof(Cases))]
-    public void The_refactored_writer_writes_the_same_bytes_as_the_pre_refactor_writer(string name)
+    /// <summary>Writes one case through the legacy writer and through the current one.</summary>
+    private static (byte[] Legacy, byte[] Current) WriteBoth(string name)
     {
-        //Arrange
         var (rate, channels, settings, source, chunk) = Describe(name);
         using var expected = new MemoryStream();
         using var actual = new MemoryStream();
 
-        //Act
         using (var legacy = new LegacyOggOpusWriter(expected, channels, rate, settings, SerialNumber))
         {
             for (var offset = 0; offset < source.Length; offset += chunk)
@@ -118,9 +139,95 @@ public class OggOpusWriterByteStabilityTests
             }
         }
 
+        return (expected.ToArray(), actual.ToArray());
+    }
+
+    /// <summary>An Ogg Opus stream taken apart: both headers, the audio packets, their granules.</summary>
+    private sealed class Lifted
+    {
+        public byte[] Head { get; set; }
+        public byte[] Tags { get; set; }
+        public List<byte[]> Packets { get; } = new List<byte[]>();
+        public long FinalGranule { get; set; }
+    }
+
+    private static Lifted Lift(byte[] bytes)
+    {
+        using var stream = new MemoryStream(bytes);
+        using var pages = new OggPageReader(stream, leaveOpen: true);
+        var lifted = new Lifted();
+
+        pages.TryReadPacket(out var head).Should().BeTrue();
+        lifted.Head = head.Data;
+        pages.TryReadPacket(out var tags).Should().BeTrue();
+        lifted.Tags = tags.Data;
+
+        while (pages.TryReadPacket(out var packet))
+        {
+            if (packet.Data.Length == 0) continue;
+
+            lifted.Packets.Add(packet.Data);
+            if (packet.GranulePosition >= 0) lifted.FinalGranule = packet.GranulePosition;
+        }
+
+        return lifted;
+    }
+
+    [Theory]
+    [MemberData(nameof(Cases))]
+    public void The_refactored_writer_writes_the_same_bytes_as_the_pre_refactor_writer(string name)
+    {
+        //Arrange
+        //Act
+        var (expected, actual) = WriteBoth(name);
+
         //Assert
         expected.Length.Should().BeGreaterThan(0);
-        actual.ToArray().Should().Equal(expected.ToArray());
+        actual.Should().Equal(expected);
+    }
+
+    [Theory]
+    [MemberData(nameof(ResampledCases))]
+    public void Resampled_input_differs_from_the_pre_refactor_writer_only_by_the_resampler_delay_and_tail(string name)
+    {
+        //Arrange
+        var (rate, channels, settings, source, _) = Describe(name);
+        var delay = new OpusEncodingCore(channels, rate, settings).ResamplerDelay;
+        var inputFrames = (long)source.Length / channels;
+        var exactLength = ((inputFrames * 48000) + (rate / 2)) / rate;
+
+        //Act
+        var (legacyBytes, currentBytes) = WriteBoth(name);
+        var legacy = Lift(legacyBytes);
+        var current = Lift(currentBytes);
+
+        //Assert
+        OpusHead.TryParse(legacy.Head, out var legacyHead).Should().BeTrue();
+        OpusHead.TryParse(current.Head, out var currentHead).Should().BeTrue();
+
+        // The pre-skip grows by exactly the resampler's delay; nothing else in the header moves.
+        delay.Should().BeGreaterThan(0);
+        currentHead.PreSkip.Should().Be(legacyHead.PreSkip + delay);
+        currentHead.PreSkip = legacyHead.PreSkip;
+        currentHead.ToBytes().Should().Equal(legacy.Head);
+        current.Tags.Should().Equal(legacy.Tags);
+
+        // Both streams state the input's length at 48 kHz, but the legacy one counted the
+        // resampler's delay as audio: it played that many samples of the filter's lead-in at the
+        // start and cut that many of the caller's samples off the end. The current stream states
+        // the same length after a pre-skip that discards the lead-in, with the tail drained.
+        var legacyLength = legacy.FinalGranule - legacyHead.PreSkip;
+        legacyLength.Should().BeCloseTo(exactLength, 1);
+        current.FinalGranule.Should().Be(legacyHead.PreSkip + delay + exactLength);
+
+        // Every packet before the one in which the legacy writer started padding with silence is
+        // the same packet: the encoder saw the same samples up to there.
+        var unchanged = (int)(legacyLength / Frame);
+        current.Packets.Count.Should().BeGreaterThanOrEqualTo(unchanged);
+        for (var i = 0; i < unchanged; i++)
+        {
+            current.Packets[i].Should().Equal(legacy.Packets[i]);
+        }
     }
 
     [Fact]
